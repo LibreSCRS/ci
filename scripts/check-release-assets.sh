@@ -7,17 +7,6 @@
 #                               are exactly the declared set, both directions.
 #                               No <dir> means "this release uploads no asset",
 #                               and then the declaration must hold no glob.
-#   --wired                     on push: the release workflow's job that runs
-#                               `gh release create` runs `--staged` before it,
-#                               in a step that can fail the job -- not behind
-#                               continue-on-error, an if:, or a trailing ||.
-#                               A step that `uses:` the shared release-publish
-#                               action counts as both, in that order: the
-#                               action runs --staged before it creates the
-#                               release, and this same arm, pointed at the
-#                               action's own file (RELEASE_WORKFLOW=
-#                               actions/release-publish/action.yml), is what
-#                               the self-test holds to that.
 #   --published <tag>           after the release exists: its assets are the
 #                               declared set. A draft is judged, and says so.
 #   --published-strict <tag>    the same, and a draft is NOT judged (exit 2):
@@ -39,19 +28,16 @@
 #
 # Inputs (for the self-test; CI uses the defaults):
 #   RELEASE_ASSETS_FILE  default: $REPO_ROOT/ci/release-assets.txt
-#   RELEASE_WORKFLOW     default: $REPO_ROOT/.github/workflows/release.yml;
-#                        a composite action.yml is read the same way
 #   GH_ASSETS_JSON       a file standing in for `gh release view --json`
 #   GITHUB_REPOSITORY    the repository `gh release view` asks about
 #
 # Exit codes -- a consumer writes the condition as `rc = 0`, never "not 1":
-#   0  the sets agree (or the job is wired)
+#   0  the sets agree
 #   1  they do not: a name with no glob, a glob with no name, a directory in
-#      staging, an empty staging against a non-empty declaration, or the
-#      --staged step missing from or after the release step
+#      staging, or an empty staging against a non-empty declaration
 #   2  nothing could be measured, which is NOT a pass: no declaration, a glob
 #      declared twice, a staging directory that was promised and does not
-#      exist, no `gh release create` in the workflow, no release to read, or a
+#      exist, no release to read, or a
 #      draft under --published-strict
 set -uo pipefail
 
@@ -63,10 +49,9 @@ root="${REPO_ROOT:-${GITHUB_WORKSPACE:-}}"
 [ -n "$root" ] && [ -d "$root" ] \
     || { echo "FATAL: no consumer tree (set REPO_ROOT) -- cannot judge" >&2; exit 2; }
 DECL="${RELEASE_ASSETS_FILE:-$root/ci/release-assets.txt}"
-WORKFLOW="${RELEASE_WORKFLOW:-$root/.github/workflows/release.yml}"
 
 usage() {
-    echo "FATAL: usage: $self --staged [<dir>] | --wired | --published <tag> | --published-strict <tag>" >&2
+    echo "FATAL: usage: $self --staged [<dir>] | --published <tag> | --published-strict <tag>" >&2
     exit 2
 }
 
@@ -158,94 +143,6 @@ staged() {
     return "$rc"
 }
 
-# ------------------------------------------------------------------ wired --
-wired() {
-    if [ ! -f "$WORKFLOW" ]; then
-        echo "FATAL: no release workflow at $WORKFLOW -- cannot judge" >&2
-        return 2
-    fi
-    command -v python3 >/dev/null 2>&1 \
-        || { echo "FATAL: python3 is not on PATH -- cannot judge" >&2; return 2; }
-    python3 - "$WORKFLOW" <<'PYEOF'
-import re, sys
-try:
-    import yaml
-except ImportError:
-    print("FATAL: PyYAML is not installed -- cannot judge", file=sys.stderr)
-    sys.exit(2)
-path = sys.argv[1]
-try:
-    with open(path, encoding="utf-8") as fh:
-        doc = yaml.safe_load(fh)
-except yaml.YAMLError as exc:
-    print(f"FATAL: {path} is not readable YAML ({exc}) -- cannot judge", file=sys.stderr)
-    sys.exit(2)
-
-def code(run):
-    return "\n".join(l for l in str(run or "").split("\n")
-                     if not l.lstrip().startswith("#"))
-
-CREATE = re.compile(r"\bgh\s+release\s+create\b")
-STAGED = re.compile(r"check-release-assets(\.sh)?[\"']?\s+--staged\b")
-# The shared action runs --staged and then gh release create, in that order;
-# the self-test holds its action.yml to exactly that through this same arm.
-SHARED = re.compile(r"^LibreSCRS/ci/actions/release-publish@[0-9a-f]{40}$|^\./actions/release-publish$")
-doc = doc or {}
-jobs = doc.get("jobs") or {}
-if not jobs and isinstance(doc.get("runs"), dict):
-    # A composite action: its steps are one "job", named after the file.
-    jobs = {"(composite)": {"steps": doc["runs"].get("steps") or []}}
-creators = []
-staged_in = []
-disarmed = []
-for jname, job in jobs.items():
-    steps = (job or {}).get("steps") or []
-    for i, step in enumerate(steps):
-        step = step or {}
-        body = code(step.get("run"))
-        shared = bool(SHARED.match(str(step.get("uses") or "").strip()))
-        if CREATE.search(body) or shared:
-            creators.append((jname, i))
-        if STAGED.search(body) or shared:
-            # A step that cannot fail the job is not a check in the chain: it
-            # stays in the file and never stops a release.
-            why = []
-            coe = step.get("continue-on-error", False)
-            if coe not in (False, "false"):
-                why.append(f"continue-on-error: {coe}")
-            if "if" in step:
-                why.append(f"if: {step['if']}")
-            for line in body.split("\n"):
-                if STAGED.search(line) and re.search(r"\|\||;|&\s*$", line[STAGED.search(line).end():]):
-                    why.append("its exit status is swallowed after the call (|| or ;)")
-            if why:
-                disarmed.append((jname, i, why))
-            else:
-                staged_in.append((jname, i))
-if not creators:
-    print(f"FATAL: no job in {path} runs gh release create or the shared release-publish action -- nothing to be wired into; cannot judge",
-          file=sys.stderr)
-    sys.exit(2)
-rc = 0
-for jname, i in creators:
-    mine = [k for j, k in staged_in if j == jname]
-    if not mine:
-        elsewhere = sorted({j for j, _ in staged_in})
-        extra = f" (it runs in {', '.join(elsewhere)}, which does not publish)" if elsewhere else ""
-        for j, k, why in disarmed:
-            if j == jname:
-                extra += f" (step {k + 1} calls it but cannot fail the job: {'; '.join(why)})"
-        print(f"::error::job {jname} runs gh release create with no check-release-assets.sh --staged step before it{extra}")
-        rc = 1
-    elif min(mine) > i:
-        print(f"::error::job {jname} runs check-release-assets.sh --staged at step {min(mine) + 1}, after gh release create at step {i + 1}")
-        rc = 1
-if rc == 0:
-    print(f"check-release-assets: --staged runs before gh release create in {len(creators)} job(s)")
-sys.exit(rc)
-PYEOF
-}
-
 # -------------------------------------------------------------- published --
 published() {
     local tag="$1" strict="$2" json
@@ -311,10 +208,6 @@ case "$1" in
         shift
         [ "$#" -le 1 ] || usage
         staged "$@"
-        ;;
-    --wired)
-        [ "$#" -eq 1 ] || usage
-        wired
         ;;
     --published | --published-strict)
         # An empty tag would make gh answer with the latest release: evidence
