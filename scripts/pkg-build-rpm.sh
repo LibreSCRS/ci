@@ -96,23 +96,27 @@ specs=( packaging/rpm/*.spec )
 shopt -u nullglob
 [ "${#specs[@]}" -eq 1 ] || { echo "pkg-build-rpm: want exactly one packaging/rpm/*.spec, found ${#specs[@]}" >&2; exit 1; }
 spec="${specs[0]}"
-name=$(awk '/^Name:/{print $2; exit}' "$spec")
-version=$(awk '/^Version:/{print $2; exit}' "$spec")
 
 defines=( --define "debug_package %{nil}" --define "_smp_build_ncpus $JOBS" )
 case "$MANAGER" in
 dnf)
     pm_install() { dnf -y -q install "$@"; }
-    dnf -y -q install rpm-build rpmdevtools dnf-plugins-core tar >/dev/null
+    # file: brp-strip finds what to strip with it, and a container without
+    # it strips nothing (measured: every library shipped unstripped).
+    dnf -y -q install rpm-build rpmdevtools dnf-plugins-core tar file >/dev/null
     ;;
 zypper)
     pm_install() { zypper -n -q --no-gpg-checks install --allow-unsigned-rpm "$@"; }
     zypper -n -q refresh >/dev/null
-    pm_install rpm-build tar gzip gawk ninja >/dev/null
+    pm_install rpm-build tar gzip gawk ninja file >/dev/null
     defines+=( --define "dist .$SLUG" --define "__builder /usr/bin/ninja" --define "_vpath_builddir ." )
     ;;
 *) echo "pkg-build-rpm: unknown manager '$MANAGER'" >&2; exit 2 ;;
 esac
+
+# After the tools: the Tumbleweed image has no awk until gawk is installed.
+name=$(awk '/^Name:/{print $2; exit}' "$spec")
+version=$(awk '/^Version:/{print $2; exit}' "$spec")
 
 # Upstream LibreSCRS packages first: build dependencies resolve against them.
 # A debug package is never an input.

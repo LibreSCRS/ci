@@ -77,13 +77,18 @@ run("non-bundling tag with owner approval passes", 0,
 many = "".join(f"lintian * embedded-library *lib{i}* -- bundled library number {i} on purpose\n" for i in range(6))
 many_out = "".join(f"W: liblibrescrs5: embedded-library /usr/lib/lib{i}.so x\n" for i in range(6))
 run("six rows exceed the cap of five", 1, {"liblibrescrs5.txt": many}, lintian=many_out)
-run("rpmlint output parsed and judged", 1, {"librescrs-middleware.txt":
+run("rpmlint errors are judged", 1, {},
+    slug="fedora43", linted="librescrs-middleware",
+    rpmlint="librescrs-middleware.x86_64: E: incorrect-fsf-address /usr/share/licenses/x/LICENSE\n")
+run("rpmlint warnings are not judged", 0, {},
+    slug="fedora43", linted="librescrs-middleware", rpmlint=RPMLINT_BUNDLED)
+run("a row for an rpmlint warning is stale (warnings are never findings)", 1, {"librescrs-middleware.txt":
     "rpmlint * embedded-library * -- OpenSSL is linked statically on purpose (README-bundling.md)\n"},
     slug="fedora43", linted="librescrs-middleware", rpmlint=RPMLINT_BUNDLED)
-run("rpmlint fully accepted", 0, {"librescrs-middleware.txt":
-    "rpmlint * embedded-library * -- OpenSSL is linked statically on purpose (README-bundling.md)\n"
-    "rpmlint fedora* no-manual-page-for-binary eid-sod-verify -- a diagnostic tool, documented in the README [owner 2026-09-26]\n"},
-    slug="fedora43", linted="librescrs-middleware", rpmlint=RPMLINT_BUNDLED)
+run("rpmlint error accepted by an approved row", 0, {"librescrs-middleware.txt":
+    "rpmlint fedora* spelling-error *eMRTD* -- eMRTD is the ICAO name of the document, not a misspelling [owner 2026-09-26]\n"},
+    slug="fedora43", linted="librescrs-middleware",
+    rpmlint="librescrs-middleware.x86_64: E: spelling-error ('eMRTD', '%description -l en_US eMRTD -> emoted')\n")
 run("no linted package cannot be judged", 2, {}, linted="", lintian="")
 run("no tool output cannot be judged", 2, {})
 

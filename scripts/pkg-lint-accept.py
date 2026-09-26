@@ -6,7 +6,12 @@ Usage:
   pkg-lint-accept.py --slug S --accepted DIR --linted PKG[,PKG...] \
                      [--lintian FILE] [--rpmlint FILE]
 
-Every error (E) and warning (W) the tools print is a finding. A finding is
+A finding is every lintian error or warning (lintian --fail-on error,warning)
+and every rpmlint ERROR. rpmlint warnings are printed but not judged: they are
+dominated by distribution-policy checks (Fedora's crypto policy, gethostbyname
+in bundled curl, ...) that describe how a distribution builds its own
+archive, not a defect of a package published as a release file, and the
+original plan for this gate was "rpmlint without errors". A finding is
 accepted only by a row in lint-accepted/<package>.txt:
 
     <tool> <slug-glob> <tag> <context-glob> -- <reason>
@@ -41,6 +46,7 @@ CAP = 5
 MIN_REASON = 15
 OWNER = re.compile(r"\[owner \d{4}-\d{2}-\d{2}\]")
 FAMILY = re.compile(r"^embedded-library")
+JUDGED = {"lintian": ("E", "W"), "rpmlint": ("E",)}
 
 LINTIAN = re.compile(r"^([EWIPXOC]): ([^\s:]+)(?: \([a-z]+\))?: (\S+)\s*(.*)$")
 RPMLINT = re.compile(r"^([^\s:]+?)(?:\.(?:x86_64|noarch|i686|aarch64|src))?:\s+([EW]): (\S+)\s*(.*)$")
@@ -129,8 +135,12 @@ def main():
     rows = {p: load_rows(a.accepted, p, problems) for p in linted}
     bad = []
     counted = 0
+    notes = 0
     for tool, pkg, sev, tag, ctx in findings:
-        if sev not in ("E", "W"):
+        if sev not in JUDGED[tool]:
+            if sev == "W":
+                notes += 1
+                print(f"note      {tool} {sev} {pkg}: {tag} {ctx}")
             continue
         counted += 1
         hit = None
@@ -153,7 +163,7 @@ def main():
     for p in problems:
         print(f"ROW       {p}")
     print(f"pkg-lint-accept: {a.slug}: {counted} E/W finding(s) over {len(linted)} package(s) "
-          f"with {'+'.join(ran)}; {len(bad)} unaccepted, {len(problems)} row problem(s)")
+          f"with {'+'.join(ran)}; {len(bad)} unaccepted, {len(problems)} row problem(s); {notes} unjudged warning(s)")
     return 1 if bad or problems else 0
 
 
