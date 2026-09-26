@@ -79,7 +79,8 @@ if [ "$rc" = 0 ] && ! grep -q 'thirdparty/sub/file.c' "$W/m3" && ! grep -q '/ext
 else flunk "--submodules no, --exclude and --version act"; fi
 mkdir -p "$W/o4"
 GITHUB_REPOSITORY=LibreSCRS/Named REPO_ROOT="$R" run --name pkg --out "$W/o4"
-tar -tzf "$W/o4/pkg_5.0.0.orig.tar.gz" 2>/dev/null | head -n1 | grep -qx 'Named-5.0.0/' && pass "root and top name from the environment" || flunk "root and top name from the environment"
+members "$W/o4/pkg_5.0.0.orig.tar.gz" >"$W/m4" 2>/dev/null
+grep -qx 'Named-5.0.0/' "$W/m4" && ! grep -qv '^Named-5.0.0/' "$W/m4" && pass "root and top name from the environment" || flunk "root and top name from the environment"
 
 # --- refused ---------------------------------------------------------------
 cp -r "$R" "$W/nopin"; : >"$W/nopin/cmake/FetchDep.cmake"; git -C "$W/nopin" commit -qam nopin
