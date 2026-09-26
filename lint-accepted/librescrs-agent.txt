@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# The LibreSCRS agent RPM. openSUSE lists every polkit action a package may
+# grant in its own polkit-default-privs whitelist, which only packages in the
+# openSUSE Build Service archive can join; SPEC D18 accepts that archive policy
+# for a package published outside it. The actions themselves are the agent's
+# documented authorisation surface.
+rpmlint opensuse* polkit-user-privilege * -- third-party package, not in the OBS archive: openSUSE's polkit-default-privs whitelist is archive-only (SPEC D18) [owner 2026-09-26]
