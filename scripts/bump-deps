@@ -152,14 +152,19 @@ repo_root_default() {
     [ -n "$r" ] || r="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
     printf '%s\n' "$r"
 }
+# Any repository of the graph, the root (LibreMiddleware, which locks nothing)
+# included; a name outside it is "cannot judge", never a pass.
 consumer_name() {  # --consumer, else the root's basename, else GITHUB_REPOSITORY
     local root=$1 b
-    [ -n "$OPT_CONSUMER" ] && { REPLY=$OPT_CONSUMER; return; }
+    if [ -n "$OPT_CONSUMER" ]; then
+        [ -n "${KNOWN[$OPT_CONSUMER]:-}" ] || die2 "'$OPT_CONSUMER' is not a LibreSCRS repository this tool knows"
+        REPLY=$OPT_CONSUMER; return
+    fi
     b="$(basename -- "$root")"
-    [ -n "${EXPECT[$b]:-}" ] && { REPLY=$b; return; }
-    b="${GITHUB_REPOSITORY##*/}"
-    [ -n "$b" ] && [ -n "${EXPECT[$b]:-}" ] && { REPLY=$b; return; }
-    die2 "cannot tell which consumer $root is (pass --consumer)"
+    [ -n "${KNOWN[$b]:-}" ] && { REPLY=$b; return; }
+    b="${GITHUB_REPOSITORY:-}"; b="${b##*/}"
+    [ -n "$b" ] && [ -n "${KNOWN[$b]:-}" ] && { REPLY=$b; return; }
+    die2 "cannot tell which repository $root is (pass --consumer)"
 }
 # Consumers present in the workspace, topological order, filtered by args.
 select_consumers() {
@@ -456,6 +461,16 @@ cmd_check() {
     [ -z "$OPT_TAG" ] || [ "$OPT_NO_REMOTE" = 0 ] || die2 "--tag needs the network; drop --no-remote"
     if [ -n "$OPT_ROOT" ]; then
         consumer_name "$OPT_ROOT"; c=$REPLY
+        if [ -z "${EXPECT[$c]:-}" ]; then
+            # The graph's root builds nothing of ours from source, so a lock
+            # there names a dependency the graph does not have.
+            if [ -f "$OPT_ROOT/deps.lock" ]; then
+                red "$c is the root of the dependency graph and builds no LibreSCRS repository from source, yet $OPT_ROOT/deps.lock exists"
+            else
+                ok "$c depends on no LibreSCRS repository (root of the graph): nothing to lock"
+            fi
+            finish
+        fi
         check_consumer "$c" "$OPT_ROOT" && check_checkouts "$c"
         finish
     fi

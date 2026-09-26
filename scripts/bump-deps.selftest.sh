@@ -135,6 +135,19 @@ assert "LibreLinux's one commit tracks both deps" -- \
 assert "push wave lands" -- push_all
 expect 0 "check: green after the second wave" -- "$BD" check --workspace "$WS"
 
+# ------------------------------------------------- the graph's root, unknowns
+expect 0 "LibreMiddleware, the graph's root, depends on nothing" "" -- "$BD" check --root "$WS/LibreMiddleware"
+assert "and says so" -- grep -q 'ok: LibreMiddleware depends on no LibreSCRS repository' "$T/out"
+printf 'LibreAgent %s/LibreAgent %s main\n' "$BUMP_DEPS_URL_BASE" "$(git -C "$WS/LibreAgent" rev-parse HEAD)" >"$WS/LibreMiddleware/deps.lock"
+expect 1 "a deps.lock in the graph's root is a finding" 'RED: LibreMiddleware is the root of the dependency graph' -- \
+    "$BD" check --root "$WS/LibreMiddleware"
+rm -f "$WS/LibreMiddleware/deps.lock"
+mkdir -p "$T/LibreFoo"
+expect 2 "a repository the graph does not know cannot be judged" 'cannot tell which repository' -- \
+    "$BD" check --root "$T/LibreFoo"
+expect 2 "--consumer naming an unknown repository cannot be judged" "'LibreFoo' is not a LibreSCRS repository" -- \
+    "$BD" check --root "$WS/LibreCelik" --consumer LibreFoo
+
 # ------------------------------------------------------------ wrong format
 expect 0 "root mode, no network: green control" -- "$BD" check --root "$WS/LibreCelik" --no-remote
 # desc | finding the output must name | sed perturbation of the lock
