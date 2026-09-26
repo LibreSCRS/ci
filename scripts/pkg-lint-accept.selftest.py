@@ -76,6 +76,12 @@ run("non-bundling tag with owner approval passes", 0,
     lintian=OTHER)
 many = "".join(f"lintian * embedded-library *lib{i}* -- bundled library number {i} on purpose\n" for i in range(6))
 many_out = "".join(f"W: liblibrescrs5: embedded-library /usr/lib/lib{i}.so x\n" for i in range(6))
+run("non-bundling tag with a recorded session decision passes", 0,
+    {"liblibrescrs5.txt": "lintian * package-name-doesnt-match-sonames * -- one runtime package on purpose [session 2026-09-26]\n"},
+    lintian=OTHER)
+run("an approval marker without a date is red", 1,
+    {"liblibrescrs5.txt": "lintian * package-name-doesnt-match-sonames * -- one runtime package on purpose [session]\n"},
+    lintian=OTHER)
 run("six rows exceed the cap of five", 1, {"liblibrescrs5.txt": many}, lintian=many_out)
 run("rpmlint errors are judged", 1, {},
     slug="fedora43", linted="librescrs-middleware",
