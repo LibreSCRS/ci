@@ -281,7 +281,9 @@ if [ -f "$REPORT/lint-files.txt" ]; then
 else
     LINT=("${ALL[@]}")
 fi
-for f in "${LINT[@]}"; do name_of "$f" >>"$REPORT/linted.txt"; done
+# One name per line whatever the manager prints: rpm --qf ends with no newline,
+# and names run together would match no lint-accepted file.
+for f in "${LINT[@]}"; do printf '%s\n' "$(name_of "$f")" >>"$REPORT/linted.txt"; done
 info "S8 linting: $(for f in "${LINT[@]}"; do basename "$f"; done | tr '\n' ' ')"
 if [ "$EXT" = deb ]; then
     pm_tools lintian
