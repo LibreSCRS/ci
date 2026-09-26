@@ -78,7 +78,7 @@ esac
 case "$MANAGER" in
     apt) pm_tools p11-kit file binutils systemd dbus-daemon dbus-user-session ;;
     dnf) pm_tools p11-kit p11-kit-trust file binutils systemd dbus-daemon ;;
-    zypper) pm_tools p11-kit p11-kit-tools file binutils systemd dbus-1-daemon ;;
+    zypper) pm_tools p11-kit p11-kit-tools file binutils findutils systemd dbus-1-daemon ;;
 esac
 
 mapfile -t ALL < <(find "$PKGS" -type f -name "*.$EXT" | sort)
