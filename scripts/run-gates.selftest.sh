@@ -167,6 +167,18 @@ expect "21 the consumer's self-tests run, and see BUILD_DIR" 0 \
 expect "22 without the build dir they do not" 1 "$(rg "$d" --phase build --build-dir '')" \
     "BUILD_DIR not handed over"
 
+# --- deps-lock reaches bump-deps with this consumer's root and name: a lock row
+#     that is not <name> <url> <commit40> <main|version> is a finding (exit 1),
+#     and the build-phase check without a build dir is "cannot judge".
+d=$(fixture lk)
+printf 'deps-lock\ndeps-lock-build build\n' > "$d.p/LibreKDE.txt"
+printf 'LibreAgent https://github.com/LibreSCRS/LibreAgent not-a-sha main\n' > "$d/deps.lock"
+commit "$d"
+(cd "$T" && REPO_ROOT="$d" python3 "$RG" --repo LibreKDE --profiles "$d.p") >"$out" 2>&1
+expect "deps-lock: a malformed lock row fails through the profile" 1 "$?" "deps.lock"
+(cd "$T" && REPO_ROOT="$d" python3 "$RG" --repo LibreKDE --profiles "$d.p" --phase build) >"$out" 2>&1
+expect "deps-lock-build: no build dir is 'cannot judge'" 2 "$?" "build-dir"
+
 [ "$fails" = 0 ] && echo "run-gates selftest: all cases behave" || echo "run-gates selftest: FAILED"
 printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"
 exit "$fails"

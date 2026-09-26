@@ -11,3 +11,5 @@ selftests
 # build-linux, client, client-lm-less, pkcs11-facade, client-macos and
 # wire-asan-macos, one leg each
 test-manifest-gate build
+# The locked upstream revisions (deps.lock): format, reachability, diamond
+deps-lock

@@ -74,6 +74,15 @@ GATES = {
     "canonical-types": ("python", "canonical-types.py", lambda c: ["--repo", c["repo"]], ()),
     "dup-scan": ("python", "dup-scan.py", lambda c: ["--repo", c["repo"]], ()),
     "selftests": ("bash4", "run-selftests.sh", lambda c: ["--root", c["root"]], ()),
+    # deps.lock: format, reachability from upstream main, the diamond. After a
+    # configure, the source tree CMake actually used must be the locked one --
+    # the property, not the message the configure printed.
+    "deps-lock": ("bash4", "bump-deps",
+                  lambda c: ["check", "--root", c["root"], "--consumer", c["repo"]], ()),
+    "deps-lock-build": ("bash4", "bump-deps",
+                        lambda c: ["check", "--root", c["root"], "--consumer", c["repo"],
+                                   "--no-remote", "--build-dir", c["build_dir"]],
+                        ("build_dir",)),
     "test-manifest-gate": ("bash", "test-manifest-gate.sh",
                            lambda c: ["--check", c["build_dir"], c["leg"]],
                            ("build_dir", "leg")),

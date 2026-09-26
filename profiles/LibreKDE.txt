@@ -11,3 +11,7 @@ selftests
 # build-linux, after the build
 warning-gate build
 test-manifest-gate build
+# The locked upstream revisions (deps.lock): format, reachability, diamond
+deps-lock
+# after configure: the source tree CMake used is the locked one
+deps-lock-build build

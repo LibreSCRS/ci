@@ -4,3 +4,5 @@
 # phase; check-workflows holds every (gate, phase) here to a step that runs it.
 check-workflows
 selftests
+# The locked upstream revisions (deps.lock): format, reachability, diamond
+deps-lock
