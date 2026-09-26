@@ -1,0 +1,551 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# bump-deps -- the one tool that reads, moves and checks the revisions the
+# LibreSCRS repositories build each other at.
+#
+# Every consumer carries a `deps.lock` in its root, one row per upstream it
+# builds from source:
+#
+#   # <name>         <url>                                        <commit40>  <main|version>
+#   LibreMiddleware  https://github.com/LibreSCRS/LibreMiddleware  3307307...  main
+#
+# Column 4 is `main` while developing (the commit was upstream main's HEAD when
+# it was locked) and the release version once locked to a tag. Who locks whom
+# is fixed below (EXPECT); topological order is the order of REPOS.
+#
+# Commands:
+#   status   [repo...]           consumer, dep, locked, upstream HEAD, commits
+#                                behind, product paths the gap touches; then
+#                                the submodules (report only -- never moved)
+#   to-head  [repo...]           lock every dep to upstream main HEAD, one
+#                                local commit per consumer, topological order
+#   to-tag V [repo...]           same, lock = upstream tag V^{commit}, col 4 = V
+#   check    [--tag V]           the only check (see check_* below); exit 0/1/2
+#   resolve  --root DIR [--names "A B"]
+#                                plumbing for actions/checkout-deps: prints
+#                                <lower>-sha / -repository / -wanted lines
+#
+# Options:
+#   --workspace DIR   side-by-side clones (default: parent of REPO_ROOT)
+#   --root DIR        check/resolve ONE consumer checkout (CI); no workspace
+#   --consumer NAME   the consumer's name when DIR's basename is not it
+#   --no-remote       check: skip what needs the network (reachability,
+#                     diamond through the dep's own lock, --tag)
+#   --checkout N=P    check: the source tree the build used for dep N
+#   --build-dir DIR   check: read FETCHCONTENT_SOURCE_DIR_<N> / _deps/<n>-src
+#                     from this CMake build tree and hold it to the lock
+#
+# Never pushes, never fetches into your clones (temporary clones only), never
+# touches a submodule. Exit codes: 0 green, 1 a finding, 2 cannot judge.
+set -uo pipefail
+
+REPOS=(LibreMiddleware LibreAgent LibreLinux LibreDarwin LibreCelik LibreKDE LibreMac)
+declare -A EXPECT=(
+    [LibreAgent]="LibreMiddleware"
+    [LibreLinux]="LibreMiddleware LibreAgent"
+    [LibreDarwin]="LibreMiddleware LibreAgent"
+    [LibreCelik]="LibreAgent"
+    [LibreKDE]="LibreAgent"
+    [LibreMac]="LibreAgent"
+)
+declare -A KNOWN=()
+for r in "${REPOS[@]}"; do KNOWN[$r]=1; done
+URL_BASE="${BUMP_DEPS_URL_BASE:-https://github.com/LibreSCRS}"
+LMAC_CONTRACT=LibreMacAgentClient/Tests/LibreMacAgentClientTests/Contract
+BUMP_SUBJECT='^build: (track|regenerate) '
+
+here="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+REGEN="$here/lmac-contract-regen.sh"
+
+die2() { echo "bump-deps: $*" >&2; exit 2; }
+[ "${BASH_VERSINFO[0]}" -ge 4 ] || die2 "needs bash >= 4"
+RED=0 UNJ=0
+red() { echo "RED: $*"; RED=1; }
+unj() { echo "CANNOT JUDGE: $*"; UNJ=1; }
+ok() { echo "ok: $*"; }
+finish() { [ "$RED" = 1 ] && exit 1; [ "$UNJ" = 1 ] && exit 2; exit 0; }
+
+TMPROOT="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/var/tmp}}/bump-deps.XXXXXX")" \
+    || die2 "cannot create a temporary directory"
+trap 'rm -rf "$TMPROOT"' EXIT
+
+# ---------------------------------------------------------------- lock files
+# parse_lock CONSUMER LABEL < file. Fills P_SHA/P_URL/P_VER, P_NAMES, and the
+# format problems in P_ERR (the caller decides whether they are findings).
+declare -A P_SHA P_URL P_VER
+P_NAMES=() P_ERR=()
+parse_lock() {
+    local consumer=$1 label=$2 line n=0 name url sha ver extra d
+    local expected=" ${EXPECT[$consumer]:-} "
+    P_SHA=() P_URL=() P_VER=() P_NAMES=() P_ERR=()
+    while IFS= read -r line || [ -n "$line" ]; do
+        n=$((n + 1))
+        line=${line%$'\r'}
+        [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
+        name="" url="" sha="" ver="" extra=""
+        read -r name url sha ver extra <<<"$line"
+        if [ -z "$ver" ] || [ -n "$extra" ]; then
+            P_ERR+=("$label:$n: want 4 fields <name> <url> <commit40> <main|version>: $line"); continue
+        fi
+        if [ -z "${KNOWN[$name]:-}" ]; then
+            P_ERR+=("$label:$n: unknown dependency '$name'"); continue
+        fi
+        if [[ $expected != *" $name "* ]]; then
+            P_ERR+=("$label:$n: $consumer does not depend on $name"); continue
+        fi
+        if [ -n "${P_SHA[$name]+x}" ]; then
+            P_ERR+=("$label:$n: second row for $name"); continue
+        fi
+        [ "$url" = "$URL_BASE/$name" ] || P_ERR+=("$label:$n: $name url '$url', want '$URL_BASE/$name'")
+        [[ $sha =~ ^[0-9a-f]{40}$ ]] || P_ERR+=("$label:$n: $name commit '$sha' is not 40 lowercase hex")
+        [[ $ver == main || $ver =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
+            || P_ERR+=("$label:$n: $name column 4 '$ver' is neither 'main' nor a version")
+        P_NAMES+=("$name"); P_SHA[$name]=$sha; P_URL[$name]=$url; P_VER[$name]=$ver
+    done
+    for d in ${EXPECT[$consumer]:-}; do
+        [ -n "${P_SHA[$d]+x}" ] || P_ERR+=("$label: no row for $d, which $consumer builds from")
+    done
+}
+
+# ------------------------------------------------------------------ upstream
+# Results come back in REPLY: caches must survive, so no $(...) subshells.
+declare -A HEAD_CACHE=() TAG_CACHE=() CLONE_CACHE=()
+remote_head() {
+    local url=$1
+    if [ -z "${HEAD_CACHE[$url]+x}" ]; then
+        HEAD_CACHE[$url]="$(git ls-remote "$url" refs/heads/main 2>/dev/null | awk '$2 == "refs/heads/main" { print $1 }')"
+    fi
+    REPLY=${HEAD_CACHE[$url]}
+}
+remote_tag() {  # peeled: an annotated tag names its commit through ^{}
+    local url=$1 tag=$2 out
+    if [ -z "${TAG_CACHE[$url|$tag]+x}" ]; then
+        out="$(git ls-remote "$url" "refs/tags/$tag" "refs/tags/$tag^{}" 2>/dev/null)"
+        TAG_CACHE[$url|$tag]="$(awk -v t="refs/tags/$tag" '$2 == t "^{}" { p = $1 } $2 == t { l = $1 } END { print (p != "" ? p : l) }' <<<"$out")"
+    fi
+    REPLY=${TAG_CACHE[$url|$tag]}
+}
+has_all() {
+    local g=$1 s; shift
+    for s; do git -C "$g" cat-file -e "$s^{commit}" 2>/dev/null || return 1; done
+}
+# objdir NAME URL SHA... -> REPLY = a git dir holding every SHA. The side-by-
+# side clone is read when it already has them (never fetched into); otherwise
+# one temporary blobless clone per URL. On failure REPLY is the clone (if any).
+objdir() {
+    local name=$1 url=$2 c; shift 2
+    if [ -n "${WS:-}" ] && [ -d "$WS/$name" ] && has_all "$WS/$name" "$@"; then REPLY="$WS/$name"; return 0; fi
+    c=${CLONE_CACHE[$url]:-}
+    if [ -z "$c" ]; then
+        c="$TMPROOT/clone-${#CLONE_CACHE[@]}.git"
+        git clone -q --bare --filter=blob:none "$url" "$c" 2>/dev/null || { REPLY=""; return 1; }
+        CLONE_CACHE[$url]=$c
+    fi
+    REPLY=$c
+    has_all "$c" "$@"
+}
+
+# -------------------------------------------------------------- workspace
+repo_root_default() {
+    local r="${REPO_ROOT:-${GITHUB_WORKSPACE:-}}"
+    [ -n "$r" ] || r="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+    printf '%s\n' "$r"
+}
+consumer_name() {  # --consumer, else the root's basename, else GITHUB_REPOSITORY
+    local root=$1 b
+    [ -n "$OPT_CONSUMER" ] && { REPLY=$OPT_CONSUMER; return; }
+    b="$(basename -- "$root")"
+    [ -n "${EXPECT[$b]:-}" ] && { REPLY=$b; return; }
+    b="${GITHUB_REPOSITORY##*/}"
+    [ -n "$b" ] && [ -n "${EXPECT[$b]:-}" ] && { REPLY=$b; return; }
+    die2 "cannot tell which consumer $root is (pass --consumer)"
+}
+# Consumers present in the workspace, topological order, filtered by args.
+select_consumers() {
+    local want=" $* " r
+    SEL=()
+    for r in "$@"; do [ -n "${EXPECT[$r]:-}" ] || die2 "'$r' is not a consumer (known: ${!EXPECT[*]})"; done
+    for r in "${REPOS[@]}"; do
+        [ -n "${EXPECT[$r]:-}" ] || continue
+        [ "$#" -eq 0 ] || [[ $want == *" $r "* ]] || continue
+        if [ -d "$WS/$r/.git" ] || [ -f "$WS/$r/.git" ]; then SEL+=("$r")
+        elif [ "$#" -gt 0 ]; then die2 "$r is not in the workspace $WS"
+        fi
+    done
+}
+
+# ------------------------------------------------------------------ status
+legacy_rows() {  # before deps.lock: what the repository pins today, if anything
+    local c=$1 d=$2 dir="$WS/$1" f
+    REPLY=""
+    if [ "$d" = LibreAgent ]; then
+        for f in cmake/libreagent.pin "$LMAC_CONTRACT/wire-vocabulary.provenance"; do
+            [ -f "$dir/$f" ] && { REPLY="$(tr -d '[:space:]' <"$dir/$f")"; LEGACY_SRC=$f; return; }
+        done
+    fi
+    LEGACY_SRC="(none: floats on main)"
+}
+product_paths() {  # top-level entries a gap touches, minus CI/test/docs
+    git -C "$1" diff --name-only "$2" "$3" 2>/dev/null | cut -d/ -f1 | sort -u \
+        | grep -Ev '^(\.github|ci|test|tests|testsupport|docs?|bench|fuzz|tools|LICENSES|KEYS|Doxyfile.*|.*\.md)$' \
+        | paste -sd, -
+}
+cmd_status() {
+    local c d sha url head behind paths src
+    LEGACY_NOTES=()
+    select_consumers "$@"
+    printf '%-12s %-16s %-12s %-12s %6s  %-10s %s\n' consumer dep locked upstream behind source product-paths
+    for c in "${SEL[@]}"; do
+        if [ -f "$WS/$c/deps.lock" ]; then
+            parse_lock "$c" "$c/deps.lock" <"$WS/$c/deps.lock"
+            for e in "${P_ERR[@]}"; do echo "  format: $e"; done
+        else
+            P_SHA=() P_NAMES=()
+        fi
+        for d in ${EXPECT[$c]}; do
+            url="$URL_BASE/$d"
+            if [ -n "${P_SHA[$d]+x}" ]; then sha=${P_SHA[$d]}; src=deps.lock
+            else legacy_rows "$c" "$d"; sha=$REPLY; src=legacy; LEGACY_NOTES+=("$c $d: $LEGACY_SRC"); fi
+            remote_head "$url"; head=$REPLY
+            behind="?" paths="?"
+            if [ -z "$head" ]; then behind="no-remote"
+            elif [ -z "$sha" ]; then behind="-"; paths="-"
+            elif [ "$sha" = "$head" ]; then behind=0; paths="-"
+            elif objdir "$d" "$url" "$sha" "$head"; then
+                if git -C "$REPLY" merge-base --is-ancestor "$sha" "$head" 2>/dev/null; then
+                    behind="$(git -C "$REPLY" rev-list --count "$sha..$head")"
+                else behind="diverged"; fi
+                paths="$(product_paths "$REPLY" "$sha" "$head")"; paths=${paths:--}
+            else behind="unknown"; fi
+            printf '%-12s %-16s %-12s %-12s %6s  %-10s %s\n' "$c" "$d" "${sha:0:12}" "${head:0:12}" "$behind" "$src" "$paths"
+        done
+    done
+    [ "${#LEGACY_NOTES[@]}" -eq 0 ] || printf 'legacy (no deps.lock yet): %s\n' "${LEGACY_NOTES[@]}"
+    echo
+    echo "submodules (report only; bump-deps never moves them):"
+    local r line sub
+    for r in "${REPOS[@]}"; do
+        [ -f "$WS/$r/.gitmodules" ] || continue
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            sub="$(awk '{ print $2 }' <<<"$line")"
+            if [ -n "$(git -C "$WS/$r/$sub" status --porcelain 2>/dev/null)" ]; then line="$line  [DIRTY working tree]"; fi
+            echo "  $r: $line"
+        done < <(git -C "$WS/$r" submodule status 2>/dev/null)
+    done
+}
+
+# ------------------------------------------------------------------ bumping
+write_lock() {  # write_lock CONSUMER VERCOL; rows from T_SHA
+    local c=$1 ver=$2 f="$WS/$1/deps.lock" tmp d
+    tmp="$TMPROOT/deps.lock.new"
+    if [ -f "$f" ]; then
+        awk '/^[[:space:]]*(#|$)/ { print; next } { exit }' "$f" >"$tmp"
+    else
+        cat >"$tmp" <<'EOF'
+# Upstream revisions this repository builds from source. Written by
+# `bump-deps to-head|to-tag` (LibreSCRS/ci) and held by `bump-deps check`:
+# move a row with the tool, never by hand.
+#
+# <name>  <url>  <commit>  <main|version>
+EOF
+    fi
+    for d in ${EXPECT[$c]}; do
+        printf '%-16s %-46s %s  %s\n' "$d" "$URL_BASE/$d" "${T_SHA[$d]}" "$ver" >>"$tmp"
+    done
+    cat -- "$tmp" >"$f"
+}
+# The revision a consumer should lock for dep D on to-head: upstream main HEAD,
+# or the side-by-side clone's HEAD when it is upstream HEAD plus nothing but
+# bump commits (this run's, or an earlier unpushed run's). Anything else local
+# is somebody's unpublished work and is not locked onto.
+head_target() {
+    local d=$1 url="$URL_BASE/$1" h l bad
+    remote_head "$url"; h=$REPLY
+    [ -n "$h" ] || die2 "cannot read main of $url"
+    REPLY=$h
+    [ -d "$WS/$d" ] || return 0
+    git -C "$WS/$d" cat-file -e "$h^{commit}" 2>/dev/null || return 0
+    l="$(git -C "$WS/$d" rev-parse HEAD)"
+    [ "$l" != "$h" ] || return 0
+    git -C "$WS/$d" merge-base --is-ancestor "$h" "$l" || return 0
+    bad="$(git -C "$WS/$d" log --format=%s "$h..$l" | grep -Evc "$BUMP_SUBJECT")"
+    [ "$bad" = 0 ] && REPLY=$l
+    return 0
+}
+cmd_bump() {  # cmd_bump head|tag VERSION repo...
+    local mode=$1 ver=$2 c d url h msg changed paths; shift 2
+    local -A T_SHA
+    select_consumers "$@"
+    [ "${#SEL[@]}" -gt 0 ] || die2 "no consumer found in $WS"
+    # Preflight everything before the first write: a dirty lock would be
+    # swept into the commit, and a consumer that does not contain upstream
+    # main would get a bump commit on stale history that cannot be pushed.
+    for c in "${SEL[@]}"; do
+        paths="deps.lock"; [ "$c" = LibreMac ] && paths="deps.lock $LMAC_CONTRACT"
+        # shellcheck disable=SC2086
+        [ -z "$(git -C "$WS/$c" status --porcelain -- $paths)" ] || die2 "$c: uncommitted changes in $paths"
+        remote_head "$URL_BASE/$c"; h=$REPLY
+        [ -n "$h" ] || die2 "$c: cannot read main of $URL_BASE/$c"
+        if ! git -C "$WS/$c" cat-file -e "$h^{commit}" 2>/dev/null \
+            || ! git -C "$WS/$c" merge-base --is-ancestor "$h" HEAD; then
+            die2 "$c: HEAD does not contain upstream main ${h:0:12} -- update the clone first"
+        fi
+    done
+    for c in "${SEL[@]}"; do
+        T_SHA=()
+        if [ -f "$WS/$c/deps.lock" ]; then parse_lock "$c" x <"$WS/$c/deps.lock"; else P_SHA=() P_VER=(); fi
+        changed=()
+        for d in ${EXPECT[$c]}; do
+            url="$URL_BASE/$d"
+            if [ "$mode" = head ]; then head_target "$d"
+            else remote_tag "$url" "$ver"; [ -n "$REPLY" ] || die2 "$c: $d has no tag $ver upstream"; fi
+            T_SHA[$d]=$REPLY
+            [ "${P_SHA[$d]:-}" = "$REPLY" ] && [ "${P_VER[$d]:-}" = "$ver" ] || changed+=("$d ${REPLY:0:12}")
+        done
+        write_lock "$c" "$ver"
+        paths=(deps.lock)
+        if [ "$c" = LibreMac ]; then
+            objdir LibreAgent "$URL_BASE/LibreAgent" "${T_SHA[LibreAgent]}" || die2 "LibreMac: cannot read LibreAgent ${T_SHA[LibreAgent]}"
+            "$REGEN" --root "$WS/$c" --la-repo "$REPLY" --rev "${T_SHA[LibreAgent]}" \
+                || die2 "LibreMac: contract regeneration failed"
+            paths+=("$LMAC_CONTRACT/wire-vocabulary.json" "$LMAC_CONTRACT/prompt-policy.txt")
+        fi
+        git -C "$WS/$c" add -- "${paths[@]}" || die2 "$c: git add failed"
+        if git -C "$WS/$c" diff --cached --quiet -- "${paths[@]}"; then
+            echo "$c: up to date"; continue
+        fi
+        if [ "${#changed[@]}" -gt 0 ]; then
+            msg="build: track $(printf '%s, ' "${changed[@]}")"; msg=${msg%, }
+        else
+            msg="build: regenerate the vendored agent contract at ${T_SHA[LibreAgent]:0:12}"
+        fi
+        git -C "$WS/$c" commit -q -m "$msg" -- "${paths[@]}" || die2 "$c: commit failed"
+        echo "$c: committed $(git -C "$WS/$c" rev-parse --short=12 HEAD) $msg"
+    done
+}
+
+# ------------------------------------------------------------------- check
+declare -A L_SHA=() L_VER=()   # "consumer|dep" -> value, for the diamond
+check_reachable() {  # CONSUMER DEP SHA
+    local c=$1 d=$2 sha=$3 url="$URL_BASE/$2" h
+    remote_head "$url"; h=$REPLY
+    [ -n "$h" ] || { unj "$c: cannot read main of $url"; return; }
+    if [ "$sha" = "$h" ]; then ok "$c: $d ${sha:0:12} is upstream main"; return; fi
+    if objdir "$d" "$url" "$sha" "$h"; then
+        if git -C "$REPLY" merge-base --is-ancestor "$sha" "$h"; then
+            ok "$c: $d ${sha:0:12} is reachable from upstream main"
+        else
+            red "$c: $d ${sha:0:12} is not reachable from upstream main ${h:0:12} (unpushed, squashed away, or on another branch)"
+        fi
+    elif [ -n "$REPLY" ] && has_all "$REPLY" "$h"; then
+        red "$c: $d ${sha:0:12} does not exist upstream"
+    else
+        unj "$c: cannot clone $url"
+    fi
+}
+check_inner_diamond() {  # a dep that is itself a consumer must agree with our other rows
+    local c=$1 d e url sha lock shared
+    for d in ${EXPECT[$c]}; do
+        [ -n "${EXPECT[$d]:-}" ] || continue
+        # Only a dep we ALSO lock can disagree: LibreCelik locks no
+        # LibreMiddleware, so LibreAgent's own lock is nothing to it.
+        shared=0
+        for e in ${EXPECT[$d]}; do [ -z "${L_SHA[$c|$e]+x}" ] || shared=1; done
+        [ "$shared" = 1 ] || continue
+        url="$URL_BASE/$d"; sha=${L_SHA[$c|$d]}
+        objdir "$d" "$url" "$sha" || { unj "$c: cannot read $d ${sha:0:12} to compare its deps.lock"; continue; }
+        if ! lock="$(git -C "$REPLY" show "$sha:deps.lock" 2>/dev/null)"; then
+            unj "$c: $d ${sha:0:12} has no deps.lock -- cannot compare what it builds from"; continue
+        fi
+        parse_lock "$d" "$d@${sha:0:12}:deps.lock" <<<"$lock"
+        for e in "${P_ERR[@]}"; do red "$e"; done
+        for e in ${EXPECT[$d]}; do
+            [ -n "${L_SHA[$c|$e]+x}" ] && [ -n "${P_SHA[$e]+x}" ] || continue
+            if [ "${L_SHA[$c|$e]}" = "${P_SHA[$e]}" ]; then
+                ok "$c: $e ${P_SHA[$e]:0:12} is the one $d ${sha:0:12} builds from"
+            else
+                red "$c: diamond -- $c locks $e ${L_SHA[$c|$e]:0:12} but its $d ${sha:0:12} builds $e ${P_SHA[$e]:0:12}"
+            fi
+        done
+    done
+}
+check_tag() {
+    local c=$1 d tag=$2
+    for d in ${EXPECT[$c]}; do
+        [ "${L_VER[$c|$d]}" = "$tag" ] || red "$c: $d column 4 is '${L_VER[$c|$d]}', want '$tag'"
+        remote_tag "$URL_BASE/$d" "$tag"
+        if [ -z "$REPLY" ]; then red "$c: $d has no tag $tag upstream"
+        elif [ "$REPLY" = "${L_SHA[$c|$d]}" ]; then ok "$c: $d ${REPLY:0:12} is $tag"
+        else red "$c: $d locked ${L_SHA[$c|$d]:0:12} but $tag is ${REPLY:0:12}"; fi
+    done
+}
+check_tree() {  # CONSUMER DEP PATH WHERE -- the property: HEAD of what was built
+    local c=$1 d=$2 p=$3 where=$4 head
+    if ! head="$(git -C "$p" rev-parse HEAD 2>/dev/null)"; then
+        red "$c: $d source $p ($where) is not a git checkout"; return
+    fi
+    if [ "$head" != "${L_SHA[$c|$d]}" ]; then
+        red "$c: $d source $p ($where) is at ${head:0:12}, deps.lock says ${L_SHA[$c|$d]:0:12}"
+    elif [ -n "$(git -C "$p" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        red "$c: $d source $p ($where) is at the lock but has modified files"
+    else
+        ok "$c: $d source $p ($where) is ${head:0:12}"; JUDGED=$((JUDGED + 1))
+    fi
+}
+check_checkouts() {
+    local c=$1 kv d p b cache lower upper src
+    JUDGED=0
+    for kv in "${OPT_CHECKOUTS[@]}"; do
+        d=${kv%%=*}; p=${kv#*=}
+        if [ -z "${KNOWN[$d]:-}" ]; then red "$c: --checkout names unknown dependency '$d'"; continue; fi
+        [ -n "${L_SHA[$c|$d]+x}" ] || { red "$c: --checkout $d, but deps.lock has no $d row"; continue; }
+        check_tree "$c" "$d" "$p" checkout
+    done
+    for b in "${OPT_BUILD_DIRS[@]}"; do
+        cache="$b/CMakeCache.txt"
+        [ -f "$cache" ] || { red "$c: build dir $b has no CMakeCache.txt"; continue; }
+        for d in ${EXPECT[$c]}; do
+            lower=${d,,}; upper=${d^^}
+            src="$(sed -n "s/^FETCHCONTENT_SOURCE_DIR_${upper}:[A-Z]*=//p" "$cache" | head -n1)"
+            if [ -n "$src" ]; then check_tree "$c" "$d" "$src" "FETCHCONTENT_SOURCE_DIR_${upper} of $b"
+            elif [ -d "$b/_deps/$lower-src" ]; then check_tree "$c" "$d" "$b/_deps/$lower-src" "fetched by $b"
+            else echo "note: $c: $b does not build $d from source"; fi
+        done
+    done
+    if [ "$(( ${#OPT_CHECKOUTS[@]} + ${#OPT_BUILD_DIRS[@]} ))" -gt 0 ] && [ "$JUDGED" -eq 0 ] && [ "$RED" = 0 ]; then
+        unj "$c: asked to check the build's sources but none was found"
+    fi
+}
+check_contract() {  # LibreMac: the vendored copy is the agent's contract at the lock
+    local c=$1 root=$2 sha=${L_SHA[$1|LibreAgent]} kv rc=0 src=""
+    for kv in "${OPT_CHECKOUTS[@]}"; do [ "${kv%%=*}" = LibreAgent ] && src=${kv#*=}; done
+    if [ -n "$src" ]; then
+        "$REGEN" --root "$root" --la-src "$src" --check || rc=$?
+    elif [ "$OPT_NO_REMOTE" = 1 ]; then
+        echo "note: $c: vendored contract not compared (--no-remote and no LibreAgent checkout)"; return
+    elif objdir LibreAgent "$URL_BASE/LibreAgent" "$sha"; then
+        "$REGEN" --root "$root" --la-repo "$REPLY" --rev "$sha" --check || rc=$?
+    else
+        unj "$c: cannot read LibreAgent ${sha:0:12} to compare the vendored contract"; return
+    fi
+    case $rc in 0) ;; 1) RED=1 ;; *) unj "$c: could not regenerate the vendored contract" ;; esac
+}
+check_consumer() {  # CONSUMER ROOT
+    local c=$1 root=$2 d e
+    if [ ! -f "$root/deps.lock" ]; then red "$c: no deps.lock in $root"; return 1; fi
+    parse_lock "$c" "$c/deps.lock" <"$root/deps.lock"
+    if [ "${#P_ERR[@]}" -gt 0 ]; then
+        for e in "${P_ERR[@]}"; do red "$e"; done
+        return 1
+    fi
+    ok "$c: deps.lock format"
+    for d in "${P_NAMES[@]}"; do L_SHA[$c|$d]=${P_SHA[$d]}; L_VER[$c|$d]=${P_VER[$d]}; done
+    if [ "$OPT_NO_REMOTE" = 0 ]; then
+        for d in "${P_NAMES[@]}"; do check_reachable "$c" "$d" "${L_SHA[$c|$d]}"; done
+        check_inner_diamond "$c"
+        [ -z "$OPT_TAG" ] || check_tag "$c" "$OPT_TAG"
+    fi
+    [ "$c" != LibreMac ] || check_contract "$c" "$root"
+    return 0
+}
+cmd_check() {
+    local c d s
+    [ "$#" -eq 0 ] || die2 "check takes no positional arguments"
+    [ -z "$OPT_TAG" ] || [ "$OPT_NO_REMOTE" = 0 ] || die2 "--tag needs the network; drop --no-remote"
+    if [ -n "$OPT_ROOT" ]; then
+        consumer_name "$OPT_ROOT"; c=$REPLY
+        check_consumer "$c" "$OPT_ROOT" && check_checkouts "$c"
+        finish
+    fi
+    [ "$(( ${#OPT_CHECKOUTS[@]} + ${#OPT_BUILD_DIRS[@]} ))" -eq 0 ] \
+        || die2 "--checkout/--build-dir judge one build: use them with --root"
+    for c in "${REPOS[@]}"; do
+        [ -n "${EXPECT[$c]:-}" ] || continue
+        if [ -d "$WS/$c" ]; then check_consumer "$c" "$WS/$c"
+        else unj "$c is not in the workspace $WS -- the diamond is not judged without it"; fi
+    done
+    # Same dependency, same revision, in every consumer.
+    for d in "${REPOS[@]}"; do
+        local -A seen=()
+        for c in "${REPOS[@]}"; do
+            [ -n "${L_SHA[$c|$d]+x}" ] && seen[${L_SHA[$c|$d]}]+="$c "
+        done
+        if [ "${#seen[@]}" -gt 1 ]; then
+            red "diamond -- $d is locked at ${#seen[@]} revisions: $(for s in "${!seen[@]}"; do printf '%s by %s; ' "${s:0:12}" "${seen[$s]% }"; done)"
+        elif [ "${#seen[@]}" -eq 1 ]; then
+            ok "every consumer locks $d at the same revision"
+        fi
+        unset seen
+    done
+    finish
+}
+
+# ----------------------------------------------------------------- resolve
+cmd_resolve() {
+    local c n out="" wanted d
+    [ -n "$OPT_ROOT" ] || die2 "resolve needs --root"
+    consumer_name "$OPT_ROOT"; c=$REPLY
+    [ -f "$OPT_ROOT/deps.lock" ] || { red "$c: no deps.lock in $OPT_ROOT"; finish; }
+    parse_lock "$c" "$c/deps.lock" <"$OPT_ROOT/deps.lock"
+    for e in "${P_ERR[@]}"; do red "$e"; done
+    wanted=" $(tr ',\n' '  ' <<<"$OPT_NAMES") "
+    [ -n "${OPT_NAMES// /}" ] || wanted=" ${P_NAMES[*]} "
+    for n in $wanted; do
+        [ -n "${KNOWN[$n]:-}" ] || { red "names: unknown dependency '$n'"; continue; }
+        [ -n "${P_SHA[$n]+x}" ] || red "names: $c's deps.lock has no $n row"
+    done
+    [ "$RED" = 0 ] || finish
+    for d in ${EXPECT[$c]}; do
+        if [[ $wanted == *" $d "* ]]; then
+            out+="${d,,}-wanted=true"$'\n'"${d,,}-sha=${P_SHA[$d]}"$'\n'
+            out+="${d,,}-repository=$(awk -F/ '{ print $(NF-1) "/" $NF }' <<<"${P_URL[$d]}")"$'\n'
+        else
+            out+="${d,,}-wanted=false"$'\n'
+        fi
+    done
+    printf '%s' "$out"
+    finish
+}
+
+# -------------------------------------------------------------------- main
+OPT_ROOT="" OPT_CONSUMER="" OPT_TAG="" OPT_NO_REMOTE=0 OPT_NAMES="" WS=""
+OPT_CHECKOUTS=() OPT_BUILD_DIRS=() ARGS=()
+[ "$#" -gt 0 ] || die2 "usage: bump-deps status|to-head|to-tag V|check|resolve [options] (see the header)"
+CMD=$1; shift
+if [ "$CMD" = to-tag ]; then
+    [ "$#" -gt 0 ] || die2 "to-tag needs a version"
+    OPT_TAG=$1; shift
+    [[ $OPT_TAG =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || die2 "'$OPT_TAG' is not a version"
+fi
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --workspace) WS="${2:-}"; shift 2 ;;
+        --root) OPT_ROOT="${2:-}"; shift 2 ;;
+        --consumer) OPT_CONSUMER="${2:-}"; shift 2 ;;
+        --tag) OPT_TAG="${2:-}"; shift 2 ;;
+        --no-remote) OPT_NO_REMOTE=1; shift ;;
+        --names) OPT_NAMES="${2:-}"; shift 2 ;;
+        --checkout) [[ ${2:-} == ?*=?* ]] || die2 "--checkout wants NAME=PATH"; OPT_CHECKOUTS+=("$2"); shift 2 ;;
+        --build-dir) OPT_BUILD_DIRS+=("${2:-}"); shift 2 ;;
+        -*) die2 "unknown option '$1'" ;;
+        *) ARGS+=("$1"); shift ;;
+    esac
+done
+if [ -n "$OPT_ROOT" ]; then
+    OPT_ROOT="$(cd -- "$OPT_ROOT" 2>/dev/null && pwd)" || die2 "--root is not a directory"
+elif [ "$CMD" != resolve ]; then
+    if [ -z "$WS" ]; then
+        rr="$(repo_root_default)" || die2 "no --workspace, and no REPO_ROOT/GITHUB_WORKSPACE/git toplevel to take its parent"
+        WS="$(dirname -- "$rr")"
+    fi
+    WS="$(cd -- "$WS" 2>/dev/null && pwd)" || die2 "workspace $WS is not a directory"
+fi
+case "$CMD" in
+    status) cmd_status "${ARGS[@]}" ;;
+    to-head) cmd_bump head main "${ARGS[@]}" ;;
+    to-tag) cmd_bump tag "$OPT_TAG" "${ARGS[@]}" ;;
+    check) cmd_check "${ARGS[@]}" ;;
+    resolve) cmd_resolve ;;
+    *) die2 "unknown command '$CMD'" ;;
+esac
