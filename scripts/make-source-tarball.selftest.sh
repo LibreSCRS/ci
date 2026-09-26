@@ -7,6 +7,14 @@
 # time, and that every broken input is refused.
 # shellcheck disable=SC2015  # pass and flunk always return 0, so A && pass || flunk is if-then-else
 set -uo pipefail
+# sedi <expr> <file>: edit in place on GNU and BSD sed alike (BSD `sed -i` takes
+# the expression as a backup suffix and leaves the file as it was), and refuse
+# a perturbation that changed nothing.
+sedi() {
+  sed -e "$1" "$2" >"$2.sedi" || { echo "FATAL: sed failed on $2" >&2; exit 2; }
+  if cmp -s "$2" "$2.sedi"; then echo "FATAL: perturbation '$1' changed nothing in $2" >&2; exit 2; fi
+  mv -f "$2.sedi" "$2"
+}
 unset REPO_ROOT GITHUB_WORKSPACE GITHUB_REPOSITORY
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TOOL="$here/make-source-tarball"
@@ -89,7 +97,7 @@ red "a vendor pin file without a pin is refused" 1 "found 0"
 cp -r "$R" "$W/twopin"; printf '  GIT_TAG %s\n' "$DEP1" >>"$W/twopin/cmake/FetchDep.cmake"; git -C "$W/twopin" commit -qam twopin
 run --root "$W/twopin" --name pkg --out "$W/o5" --vendor "thirdparty/dep=$W/dep@cmake/FetchDep.cmake"
 red "a vendor pin file with two pins is refused" 1 "found 2"
-cp -r "$R" "$W/nocommit"; sed -i "s/$DEP1/3333333333333333333333333333333333333333/" "$W/nocommit/cmake/FetchDep.cmake"; git -C "$W/nocommit" commit -qam nocommit
+cp -r "$R" "$W/nocommit"; sedi "s/$DEP1/3333333333333333333333333333333333333333/" "$W/nocommit/cmake/FetchDep.cmake"; git -C "$W/nocommit" commit -qam nocommit
 run --root "$W/nocommit" --name pkg --out "$W/o5" --vendor "thirdparty/dep=$W/dep@cmake/FetchDep.cmake"
 red "a pin the vendor source does not have is refused" 1 "has no commit"
 cp -r "$R" "$W/nover"; git -C "$W/nover" rm -q VERSION; git -C "$W/nover" commit -qm nover; rm -f "$W/nover/VERSION"

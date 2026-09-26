@@ -5,6 +5,14 @@
 # at its lock adds itself and what it bundles; every way a bill would be
 # wrong or empty is refused.
 set -uo pipefail
+# sedi <expr> <file>: edit in place on GNU and BSD sed alike (BSD `sed -i` takes
+# the expression as a backup suffix and leaves the file as it was), and refuse
+# a perturbation that changed nothing.
+sedi() {
+  sed -e "$1" "$2" >"$2.sedi" || { echo "FATAL: sed failed on $2" >&2; exit 2; }
+  if cmp -s "$2" "$2.sedi"; then echo "FATAL: perturbation '$1' changed nothing in $2" >&2; exit 2; fi
+  mv -f "$2.sedi" "$2"
+}
 unset REPO_ROOT GITHUB_WORKSPACE GITHUB_REPOSITORY
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TOOL="$here/make-sbom"
@@ -101,7 +109,7 @@ expect "a static upstream with no deps.lock row is refused" 1 "has no LibreDarwi
 mkdir -p "$W/plain"
 run --root "$L" --out "$W/l4.json" --static-dep "LibreAgent=$W/plain"
 expect "a static upstream that is not a checkout is refused" 1 "not a git checkout"
-sed -i "s/$QC/not-a-pin/" "$A/cmake/FetchQCBOR.cmake"
+sedi "s/$QC/not-a-pin/" "$A/cmake/FetchQCBOR.cmake"
 run --root "$L" --out "$W/l5.json" --static-dep "LibreAgent=$A" --require qcbor
 expect "an upstream that lost its QCBOR pin is refused where qcbor is required" 1 "not found in the tree: qcbor"
 

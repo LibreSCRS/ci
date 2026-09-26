@@ -55,7 +55,15 @@ EOF
   git -C "$d" update-index --add --cacheinfo "160000,$SUB,thirdparty/sub"
   echo "$d"
 }
-edit() { sed -i "$2" "$1/packaging/arch/PKGBUILD"; }
+# sedi <expr> <file>: edit in place on GNU and BSD sed alike (BSD `sed -i` takes
+# the expression as a backup suffix and leaves the file as it was), and refuse
+# a perturbation that changed nothing.
+sedi() {
+  sed -e "$1" "$2" >"$2.sedi" || { echo "FATAL: sed failed on $2" >&2; exit 2; }
+  if cmp -s "$2" "$2.sedi"; then echo "FATAL: perturbation '$1' changed nothing in $2" >&2; exit 2; fi
+  mv -f "$2.sedi" "$2"
+}
+edit() { sedi "$2" "$1/packaging/arch/PKGBUILD"; }
 
 # check <name> <want-rc> <needle> <dir> [extra args...]
 check() {
@@ -112,7 +120,7 @@ check "version: VERSION missing is a failure, not a skip" 1 "VERSION is missing"
 # --- pins ---
 d=$(fixture gitlink); git -C "$d" update-index --cacheinfo "160000,1111111111111111111111111111111111111111,thirdparty/sub"
 check "pins: a submodule gitlink the recipe does not carry" 1 "appears nowhere in the recipe" "$d" "${FLAGS[@]}"
-d=$(fixture pindrift); sed -i "s/$QC/2222222222222222222222222222222222222222/" "$d/cmake/FetchQCBOR.cmake"
+d=$(fixture pindrift); sedi "s/$QC/2222222222222222222222222222222222222222/" "$d/cmake/FetchQCBOR.cmake"
 check "pins: the FetchContent pin drifts from the recipe" 1 "_qcbor_commit drift" "$d" "${FLAGS[@]}"
 d=$(fixture pinless); edit "$d" '/^_qcbor_commit=/d'
 check "pins: --pin names a variable the recipe lacks" 1 "carries no _qcbor_commit" "$d" "${FLAGS[@]}"
