@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+lintian * embedded-library curl* -- curl is linked statically into the signing and trust libraries on purpose (README-bundling.md)
+lintian * package-name-doesnt-match-sonames * -- one runtime package carries all seven libLibreSCRS_* sonames; per-soname packages are out of scope for 5.0 (SPEC 2026-09-26, section 4) [owner 2026-09-26]

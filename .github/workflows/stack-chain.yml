@@ -1,0 +1,217 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# stack-chain -- build the whole LibreSCRS package stack for every
+# distribution slug and install it in a clean container.
+#
+#   lock  the top repositories (LibreLinux, LibreCelik, LibreKDE) at the given
+#         refs; everything below them at the commits their deps.lock names.
+#         Green here is what a release will build.
+#   head  the same, with LibreMiddleware and LibreAgent at upstream main
+#         instead of the locks: red here means the next `bump-deps to-head`
+#         will break, and where.
+#
+# Weekly (both modes) and on demand (one mode, refs from the inputs). GitHub
+# stops `schedule` in a repository with no activity for 60 days; release-train
+# preflight reads the date of the last green run of this workflow, so a
+# silenced schedule is seen before a tag and not after.
+#
+# Slugs: LibreKDE is not built on openSUSE Tumbleweed (Plasma libraries have no
+# stable ABI on a rolling distribution). Leap 16.0 is not in the set: its
+# sdbus-c++ is 1.6.0 and the agent needs >= 2.0 (measured 2026-09-26), so a
+# Leap stack has no agent.
+name: stack-chain
+
+on:
+  # A push runs only the release-download fixture (a minute); the stack
+  # itself is hours per slug and runs weekly and on demand.
+  push:
+    branches: [main, 'ci/**']
+    paths:
+      - 'scripts/pkg-*'
+      - 'actions/pkg-*/**'
+      - 'images.lock'
+      - 'lint-accepted/**'
+      - '.github/workflows/stack-chain.yml'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: lock = deps at their locks; head = LibreMiddleware and LibreAgent at main
+        type: choice
+        options: [lock, head]
+        default: lock
+      linux-ref:
+        description: LibreLinux ref
+        default: main
+      celik-ref:
+        description: LibreCelik ref
+        default: main
+      kde-ref:
+        description: LibreKDE ref
+        default: main
+      slugs:
+        description: Space-separated slugs
+        default: debian13 ubuntu2604 fedora43 fedora44 opensusetw
+  schedule:
+    - cron: '23 2 * * 1'
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan the matrix
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_MODE: ${{ inputs.mode }}
+          IN_SLUGS: ${{ inputs.slugs }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = schedule ]; then
+            modes="lock head"; slugs="debian13 ubuntu2604 fedora43 fedora44 opensusetw"
+          else
+            modes="$IN_MODE"; slugs="$IN_SLUGS"
+          fi
+          rows=()
+          for m in $modes; do
+            for s in $slugs; do
+              kde=true; [ "$s" = opensusetw ] && kde=false
+              rows+=("{\"slug\":\"$s\",\"mode\":\"$m\",\"kde\":$kde}")
+            done
+          done
+          [ "${#rows[@]}" -gt 0 ] || { echo "::error::empty matrix"; exit 1; }
+          matrix="{\"include\":[$(IFS=,; echo "${rows[*]}")]}"
+          echo "$matrix"
+          echo "matrix=$matrix" >>"$GITHUB_OUTPUT"
+
+  chain:
+    name: ${{ matrix.slug }} (${{ matrix.mode }})
+    needs: plan
+    runs-on: ubuntu-24.04
+    # LibreMiddleware alone was measured at up to 45 minutes per image; the
+    # stack is five repositories built one after another.
+    timeout-minutes: 330
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      REFS: ${{ matrix.mode == 'head' && 'LibreMiddleware=main LibreAgent=main' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: LibreSCRS/LibreLinux
+          ref: ${{ inputs.linux-ref || 'main' }}
+          path: src/LibreLinux
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: LibreSCRS/LibreCelik
+          ref: ${{ inputs.celik-ref || 'main' }}
+          path: src/LibreCelik
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        if: matrix.kde
+        with:
+          repository: LibreSCRS/LibreKDE
+          ref: ${{ inputs.kde-ref || 'main' }}
+          path: src/LibreKDE
+          submodules: recursive
+          persist-credentials: false
+
+      - name: LibreMiddleware, LibreAgent and LibreLinux
+        id: ll
+        uses: ./actions/pkg-build
+        with:
+          slug: ${{ matrix.slug }}
+          upstream: source
+          repo: ${{ github.workspace }}/src/LibreLinux
+          name: LibreLinux
+          refs: ${{ env.REFS }}
+          art: ${{ runner.temp }}/stack
+      - name: LibreCelik
+        uses: ./actions/pkg-build
+        with:
+          slug: ${{ matrix.slug }}
+          upstream: source
+          repo: ${{ github.workspace }}/src/LibreCelik
+          name: LibreCelik
+          refs: ${{ env.REFS }}
+          art: ${{ runner.temp }}/stack
+      - name: LibreKDE
+        if: matrix.kde
+        uses: ./actions/pkg-build
+        with:
+          slug: ${{ matrix.slug }}
+          upstream: source
+          repo: ${{ github.workspace }}/src/LibreKDE
+          name: LibreKDE
+          refs: ${{ env.REFS }}
+          art: ${{ runner.temp }}/stack
+
+      - name: Install and judge the whole stack
+        uses: ./actions/pkg-verify
+        with:
+          slug: ${{ matrix.slug }}
+          packages: ${{ runner.temp }}/stack/${{ matrix.slug }}
+          report: ${{ runner.temp }}/report
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: stack-chain-${{ matrix.slug }}-${{ matrix.mode }}
+          path: |
+            ${{ runner.temp }}/stack/log
+            ${{ runner.temp }}/report
+          retention-days: 7
+          if-no-files-found: warn
+
+  release-path-fixture:
+    # The one step a tag build takes that a branch never does is downloading
+    # upstream packages from a published release. Proved here against a real
+    # public release, with the job's own token: LibreMiddleware 4.2.0 carries a
+    # Linux archive (downloaded and held to its sha256) and no slug-named
+    # package (so asking for one must be refused, never an empty success).
+    name: release download path (fixture 4.2.0)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: A published asset arrives, byte for byte
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ./scripts/pkg-chain.sh fetch --repo LibreSCRS/LibreMiddleware --version 4.2.0 \
+              --pattern 'librescrs-pkcs11-4.2.0-linux-x86_64.tar.gz' --into "$RUNNER_TEMP/fx-ok"
+          echo "26fa2a8aaf1be6ef0ce9568958cc7b8ab06c865ada2b8fc539a2fef2424d5c5f  $RUNNER_TEMP/fx-ok/librescrs-pkcs11-4.2.0-linux-x86_64.tar.gz" | sha256sum -c -
+          test "$(find "$RUNNER_TEMP/fx-ok" -type f | wc -l)" -eq 1
+      - name: A slug the release does not carry is refused
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rc=0
+          ./scripts/pkg-chain.sh fetch --repo LibreSCRS/LibreMiddleware --version 4.2.0 \
+              --pattern '*.debian13.deb' --into "$RUNNER_TEMP/fx-none" || rc=$?
+          echo "PKG_FETCH_RC=$rc"
+          test "$rc" = 1

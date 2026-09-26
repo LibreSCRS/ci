@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# pkg-images -- read, check and refresh images.lock (the container image per
+# distribution slug, by digest, and the AppImage tools, by version + sha256).
+#
+# Usage:
+#   pkg-images get <slug>        print <repository>:<tag>@sha256:<digest>
+#   pkg-images manager <slug>    print apt | dnf | zypper
+#   pkg-images family <slug>     print deb | rpm
+#   pkg-images slugs             print every slug, one per line
+#   pkg-images tool <name>       print "<version> <url> <sha256>"
+#   pkg-images check             the form of the lock (offline)
+#   pkg-images refresh [--dry-run]
+#                                re-resolve every image digest from its
+#                                registry and rewrite the lock; download every
+#                                tool and hold it to its sha256 (a tool's
+#                                VERSION is never moved here -- that is a
+#                                decision, not a refresh)
+#
+# The lock is this repository's own file (it is not a consumer's), so it is
+# found next to this script unless PKG_IMAGES_LOCK names another one.
+# PKG_IMAGES_RESOLVER / PKG_IMAGES_FETCH replace the network for the self-test.
+#
+# Exit codes: 0 answered / green, 1 a finding (malformed lock, a tool whose
+# bytes do not match), 2 cannot judge (no lock, unknown slug or tool, registry
+# unreachable).
+set -uo pipefail
+
+here="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)" || exit 2
+LOCK="${PKG_IMAGES_LOCK:-$here/../images.lock}"
+
+die2() { echo "pkg-images: $*" >&2; exit 2; }
+[ -f "$LOCK" ] || die2 "no lock at $LOCK -- cannot judge"
+
+# rows KIND -> the lock's rows of that kind, comments and blanks dropped
+rows() { grep -E "^$1[[:space:]]" "$LOCK" || true; }
+
+image_row() {  # image_row SLUG -> "slug manager ref", or exit 2
+    local r
+    r="$(rows image | awk -v s="$1" '$2 == s { print $2, $3, $4 }')"
+    [ -n "$r" ] || die2 "unknown slug '$1' (known: $(rows image | awk '{printf "%s ", $2}'))"
+    [ "$(printf '%s\n' "$r" | wc -l)" -eq 1 ] || die2 "slug '$1' appears more than once"
+    printf '%s\n' "$r"
+}
+
+cmd_check() {
+    local fail=0 n=0 line kind slug mgr ref name ver url sum
+    local -A seen=()
+    while IFS= read -r line; do
+        n=$((n + 1))
+        case "$line" in ''|'#'*) continue ;; esac
+        read -r kind _ <<<"$line"
+        case "$kind" in
+        image)
+            read -r kind slug mgr ref extra <<<"$line"
+            if [ -z "${ref:-}" ] || [ -n "${extra:-}" ]; then
+                echo "FAIL line $n: want 'image <slug> <manager> <repo>:<tag>@sha256:<64 hex>': $line"; fail=1; continue
+            fi
+            [[ "$slug" =~ ^[a-z][a-z0-9]*$ ]] || { echo "FAIL line $n: slug '$slug' is not [a-z][a-z0-9]*"; fail=1; }
+            case "$mgr" in apt|dnf|zypper) ;; *) echo "FAIL line $n: manager '$mgr' is not apt|dnf|zypper"; fail=1 ;; esac
+            [[ "$ref" =~ ^[a-z0-9.-]+/[a-z0-9._/-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$ ]] \
+                || { echo "FAIL line $n: '$ref' is not <registry>/<repo>:<tag>@sha256:<64 hex>"; fail=1; }
+            [ -z "${seen[img:$slug]+x}" ] || { echo "FAIL line $n: slug '$slug' twice"; fail=1; }
+            seen[img:$slug]=1
+            ;;
+        tool)
+            read -r kind name ver url sum extra <<<"$line"
+            if [ -z "${sum:-}" ] || [ -n "${extra:-}" ]; then
+                echo "FAIL line $n: want 'tool <name> <version> <url> <sha256>': $line"; fail=1; continue
+            fi
+            [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || { echo "FAIL line $n: sha256 of $name is not 64 hex"; fail=1; }
+            case "$url" in
+                https://*) ;;
+                *) echo "FAIL line $n: $name url is not https"; fail=1 ;;
+            esac
+            case "$url" in
+                */continuous/*|*/latest/*) echo "FAIL line $n: $name url names a moving release ($url)"; fail=1 ;;
+            esac
+            case "$url" in
+                *"/$ver/"*) ;;
+                *) echo "FAIL line $n: $name url does not carry its version '$ver' as a path segment"; fail=1 ;;
+            esac
+            [ -z "${seen[tool:$name]+x}" ] || { echo "FAIL line $n: tool '$name' twice"; fail=1; }
+            seen[tool:$name]=1
+            ;;
+        *) echo "FAIL line $n: unknown row kind '$kind'"; fail=1 ;;
+        esac
+    done <"$LOCK"
+    [ -n "$(rows image)" ] || { echo "FAIL the lock names no image"; fail=1; }
+    [ "$fail" -eq 0 ] && echo "pkg-images check: $(rows image | wc -l) image(s), $(rows tool | wc -l) tool(s), well-formed"
+    return "$fail"
+}
+
+# resolve REPO TAG -> index digest (sha256:...), through the registry's API.
+# Only docker.io today; any other registry is "cannot judge", not a guess.
+resolve() {
+    if [ -n "${PKG_IMAGES_RESOLVER:-}" ]; then "$PKG_IMAGES_RESOLVER" "$1" "$2"; return; fi
+    local repo="$1" tag="$2" path tok
+    case "$repo" in
+        docker.io/*) path="${repo#docker.io/}" ;;
+        *) echo "pkg-images: registry of $repo is not supported" >&2; return 2 ;;
+    esac
+    tok="$(curl -fsS "https://auth.docker.io/token?service=registry.docker.io&scope=repository:$path:pull" \
+           | python3 -c 'import sys, json; print(json.load(sys.stdin)["token"])')" || return 2
+    curl -fsSI -H "Authorization: Bearer $tok" \
+        -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+        "https://registry-1.docker.io/v2/$path/manifests/$tag" \
+        | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" { print $2 }' | grep -E '^sha256:[0-9a-f]{64}$' \
+        || return 2
+}
+
+fetch() {  # fetch URL DEST
+    if [ -n "${PKG_IMAGES_FETCH:-}" ]; then "$PKG_IMAGES_FETCH" "$1" "$2"; return; fi
+    curl -fsSL --retry 3 -o "$2" "$1"
+}
+
+cmd_refresh() {
+    local dry=0
+    [ "${1:-}" = --dry-run ] && dry=1
+    cmd_check >/dev/null || { cmd_check; die2 "the lock is malformed -- refusing to rewrite it"; }
+    local tmp work line kind slug mgr ref repo tag old new changed=0 bad=0
+    work="$(mktemp -d "${TMPDIR:-/var/tmp}/pkg-images.XXXXXX")" || die2 "no temporary directory"
+    trap 'rm -rf "$work"' RETURN
+    tmp="$work/lock"
+    while IFS= read -r line; do
+        read -r kind slug mgr ref _ <<<"$line"
+        if [ "$kind" = image ]; then
+            repo="${ref%%:*}"; tag="${ref#*:}"; tag="${tag%%@*}"; old="${ref##*@}"
+            new="$(resolve "$repo" "$tag")" || { echo "pkg-images: cannot resolve $repo:$tag" >&2; return 2; }
+            if [ "$new" != "$old" ]; then
+                echo "moved  $slug  $repo:$tag  ${old#sha256:} -> ${new#sha256:}"
+                changed=$((changed + 1))
+                line="$(printf '%-5s %-11s %-6s %s' image "$slug" "$mgr" "$repo:$tag@$new")"
+            else
+                echo "same   $slug  $repo:$tag"
+            fi
+        fi
+        printf '%s\n' "$line" >>"$tmp"
+    done <"$LOCK"
+    local name ver url sum got
+    while read -r kind name ver url sum; do
+        fetch "$url" "$work/tool" || { echo "pkg-images: cannot download $name from $url" >&2; return 2; }
+        got="$(sha256sum "$work/tool" | cut -d' ' -f1)"
+        if [ "$got" = "$sum" ]; then echo "ok     tool $name $ver"
+        else echo "FAIL   tool $name $ver: sha256 $got, lock says $sum"; bad=1; fi
+    done < <(rows tool)
+    if [ "$dry" -eq 0 ] && [ "$changed" -gt 0 ]; then
+        sed -i -E 's/^(# Measured )[0-9]{4}-[0-9]{2}-[0-9]{2}/\1'"$(date -u +%F)"'/' "$tmp"
+        cat "$tmp" >"$LOCK"
+        echo "pkg-images: $changed image digest(s) moved; review and commit $LOCK"
+    fi
+    return "$bad"
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+    get)     [ $# -eq 1 ] || die2 "usage: get <slug>"; image_row "$1" | awk '{ print $3 }' ;;
+    manager) [ $# -eq 1 ] || die2 "usage: manager <slug>"; image_row "$1" | awk '{ print $2 }' ;;
+    family)  [ $# -eq 1 ] || die2 "usage: family <slug>"
+             m="$(image_row "$1" | awk '{ print $2 }')" || exit 2
+             case "$m" in apt) echo deb ;; dnf|zypper) echo rpm ;; *) die2 "manager '$m'" ;; esac ;;
+    slugs)   rows image | awk '{ print $2 }' ;;
+    tool)    [ $# -eq 1 ] || die2 "usage: tool <name>"
+             r="$(rows tool | awk -v n="$1" '$2 == n { print $3, $4, $5 }')"
+             [ -n "$r" ] || die2 "unknown tool '$1'"; printf '%s\n' "$r" ;;
+    check)   cmd_check ;;
+    refresh) cmd_refresh "$@" ;;
+    *) die2 "usage: pkg-images get|manager|family|slugs|tool|check|refresh" ;;
+esac

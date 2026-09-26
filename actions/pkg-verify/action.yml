@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: pkg-verify
+description: >
+  Install a whole LibreSCRS package stack in a clean container of the slug's
+  image and judge it: shared libraries resolve, p11-kit lists exactly one
+  LibreSCRS module for the variant, pkcs11-tool lists slots with no card,
+  systemd units verify, D-Bus/polkit files sit on the daemons' paths, the
+  direct<->agent switch behaves as documented for the package manager, and
+  lintian/rpmlint findings are all accepted by lint-accepted/.
+
+inputs:
+  slug:
+    description: Distribution slug from images.lock.
+    required: true
+  packages:
+    description: Newline- or space-separated directories holding the stack's .deb/.rpm files.
+    required: true
+  report:
+    description: Directory that keeps the raw logs (upload it on failure).
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Verify the ${{ inputs.slug }} stack
+      shell: bash
+      env:
+        IN_SLUG: ${{ inputs.slug }}
+        IN_PACKAGES: ${{ inputs.packages }}
+        IN_REPORT: ${{ inputs.report }}
+      run: |
+        set -uo pipefail
+        args=(--slug "$IN_SLUG")
+        for d in $IN_PACKAGES; do args+=(--packages "$d"); done
+        [ -z "$IN_REPORT" ] || args+=(--report "$IN_REPORT")
+        rc=0
+        "$GITHUB_ACTION_PATH/../../scripts/pkg-verify.sh" "${args[@]}" || rc=$?
+        echo "PKG_VERIFY_RC=$rc"
+        exit "$rc"

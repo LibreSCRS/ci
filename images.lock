@@ -1,3 +1,35 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# images.lock -- container images by digest, packaging tools by version + sha256.
-# Format: <slug> <image>@sha256:<digest>   |   tool <name> <version> <url> <sha256>
+# images.lock -- what the packaging builds run in and with. Read by
+# scripts/pkg-images; refreshed ONLY by `scripts/pkg-images refresh`, never by
+# hand, and held by `scripts/pkg-images check`.
+#
+# Two row kinds:
+#
+#   image <slug> <manager> <repository>:<tag>@sha256:<digest>
+#       One container image per distribution slug. The slug is the suffix every
+#       published package carries (`<package>.<slug>.<deb|rpm>`); the manager is
+#       apt | dnf | zypper and decides the family (apt -> deb, else rpm). The tag
+#       is kept only so `refresh` knows what to re-resolve: docker pulls by the
+#       digest and ignores the tag once both are given.
+#
+#   tool <name> <version> <url> <sha256>
+#       A binary the AppImage build downloads. The URL names a RELEASE VERSION,
+#       never `continuous`: bytes behind a moving URL change under a fixed sum,
+#       and the checksum then fails on a day nobody changed anything.
+#       appimage-runtime is passed to appimagetool with --runtime-file; without
+#       it appimagetool fetches the runtime from a `continuous` URL itself.
+#
+# Measured 2026-09-26 against registry-1.docker.io (image index digests) and
+# the downloaded release assets (sha256 of the bytes).
+
+image debian13    apt    docker.io/library/debian:13@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+image ubuntu2604  apt    docker.io/library/ubuntu:26.04@sha256:da6fc2be547864451aa253836dd926da33623312df4a9a243e35dc877c378a78
+image fedora43    dnf    docker.io/library/fedora:43@sha256:a651ddf48ea28a06ed4e1e6519f51c9f47e7a5a138722ade87369b8fbb7e5b42
+image fedora44    dnf    docker.io/library/fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
+image opensusetw  zypper docker.io/opensuse/tumbleweed:latest@sha256:007fde2c1e6b3de48681c765b3d6905d4e59d2f7a26f4585ec49dd11305c3fe7
+image leap160     zypper docker.io/opensuse/leap:16.0@sha256:1e710a28227dea189500dd49a9ccd2b9f218e059329354abdb1297ee94d2dcd4
+
+tool linuxdeploy           1-alpha-20251107-1 https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
+tool linuxdeploy-plugin-qt 1-alpha-20250213-1 https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-qt-x86_64.AppImage 15106be885c1c48a021198e7e1e9a48ce9d02a86dd0a1848f00bdbf3c1c92724
+tool appimagetool          1.9.1 https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+tool appimage-runtime      20251108 https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
