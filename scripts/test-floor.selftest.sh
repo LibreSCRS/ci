@@ -5,13 +5,15 @@
 # tests registered against stub executables), judged by test-floor.py. The
 # red cases are the losses the floor exists for: one test of a binary gone,
 # a whole binary gone, and every "this is not a test set" shape.
+# shellcheck disable=SC2016  # the ${CMAKE_BINARY_DIR} in fixture text is CMake's, not the shell's
 set -uo pipefail
 unset REPO_ROOT GITHUB_WORKSPACE
 
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 GATE="$here/test-floor.py"
-command -v cmake >/dev/null 2>&1 && command -v ctest >/dev/null 2>&1 \
-    || { echo "FATAL: cmake/ctest not on PATH -- cannot judge" >&2; exit 2; }
+if ! command -v cmake >/dev/null 2>&1 || ! command -v ctest >/dev/null 2>&1; then
+    echo "FATAL: cmake/ctest not on PATH -- cannot judge" >&2; exit 2
+fi
 T="$(mktemp -d "/var/tmp/test-floor-selftest.XXXXXX")" || exit 2
 trap 'rm -rf "$T"' EXIT
 out="$T/out"
@@ -107,6 +109,6 @@ mkdir -p "$T/nowhere"
 (cd "$T/nowhere" && GIT_CEILING_DIRECTORIES="$T" python3 "$GATE" build) >"$out" 2>&1
 expect "15 no checkout anywhere cannot be judged" 2 "$?" "no repository to judge"
 
-[ "$fails" = 0 ] && echo "test-floor selftest: all cases behave" || echo "test-floor selftest: FAILED"
+if [ "$fails" = 0 ]; then echo "test-floor selftest: all cases behave"; else echo "test-floor selftest: FAILED"; fi
 printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"
 exit "$fails"
