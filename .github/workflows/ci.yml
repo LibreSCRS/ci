@@ -51,4 +51,8 @@ jobs:
           tar xzf actionlint.tar.gz actionlint
           ./actionlint -color
       - name: shellcheck
-        run: git ls-files -z '*.sh' | xargs -0 -r shellcheck -x
+        # Every tracked file whose first line names bash, whatever its extension.
+        run: |
+          git ls-files -z | while IFS= read -r -d '' f; do
+            head -n1 -- "$f" | grep -q '^#!.*bash' && printf '%s\0' "$f"
+          done | xargs -0 -r shellcheck -x
