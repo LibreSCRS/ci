@@ -7,12 +7,20 @@
 #
 # Usage: pkg-verify.sh --slug S --packages DIR [--packages DIR]...
 #                      [--lint DIR]... [--report DIR] [--accepted DIR]
+#                      [--hook FILE --name REPO]
 #
 # --lint limits lintian / rpmlint to the packages under those directories
 # (the consumer's own); the other packages are installed for the smoke checks
 # and linted in the repository that builds them. Without --lint every package
 # is linted (the whole-stack run). A --lint directory with no package of the
 # family cannot be judged.
+#
+# --hook runs the consumer's own installed-state assertions LAST, inside the
+# same clean container (pkg-verify-inside.sh S10), instead of in a container
+# of their own. The hook sees <DIR>/<REPO>/<family>/ at /pkg and every other
+# <DIR>/<Repository>/<family>/ at /pkg-<Repository> -- the layout pkg-build
+# leaves -- plus FAMILY and PKG_MANAGER. A hook with no <DIR>/<REPO>/<family>
+# to show it cannot be judged.
 #
 # Each DIR holds .deb / .rpm files (any names: build names or release asset
 # names). --report keeps the raw logs (default: a temporary directory that is
@@ -24,7 +32,7 @@
 set -uo pipefail
 here="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)" || exit 2
 
-slug="" report="" accepted="$here/../lint-accepted"
+slug="" report="" accepted="$here/../lint-accepted" hook="" name=""
 dirs=() lintdirs=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -33,6 +41,8 @@ while [ $# -gt 0 ]; do
         --lint) lintdirs+=("$2"); shift 2 ;;
         --report) report="$2"; shift 2 ;;
         --accepted) accepted="$2"; shift 2 ;;
+        --hook) hook="$2"; shift 2 ;;
+        --name) name="$2"; shift 2 ;;
         *) echo "pkg-verify: unknown argument $1" >&2; exit 2 ;;
     esac
 done
@@ -52,6 +62,23 @@ for d in "${dirs[@]}"; do
     d="$(cd "$d" && pwd)"
     mounts+=(-v "$d:/pkgs/$i:ro"); i=$((i + 1))
 done
+hookargs=()
+if [ -n "$hook" ]; then
+    [ -f "$hook" ] || { echo "pkg-verify: hook $hook is not a file -- cannot judge" >&2; exit 2; }
+    [ -n "$name" ] || { echo "pkg-verify: --hook needs --name" >&2; exit 2; }
+    hookargs=(-v "$(cd "$(dirname "$hook")" && pwd)/$(basename "$hook"):/hook.sh:ro" -e PKG_VERIFY_HOOK=/hook.sh)
+    ownpkg=0
+    for d in "${dirs[@]}"; do
+        for sub in "$d"/*/"$family"; do
+            [ -d "$sub" ] || continue
+            sub="$(cd "$sub" && pwd)"
+            r="$(basename "$(dirname "$sub")")"
+            if [ "$r" = "$name" ]; then hookargs+=(-v "$sub:/pkg:ro"); ownpkg=1
+            else hookargs+=(-v "$sub:/pkg-$r:ro"); fi
+        done
+    done
+    [ "$ownpkg" = 1 ] || { echo "pkg-verify: no <dir>/$name/$family under ${dirs[*]} for the hook -- cannot judge" >&2; exit 2; }
+fi
 n="$(find "${dirs[@]}" -type f -name "*.$family" | wc -l)"
 [ "$n" -gt 0 ] || { echo "pkg-verify: no .$family package under ${dirs[*]} -- cannot judge" >&2; exit 2; }
 
@@ -72,7 +99,7 @@ if [ "${#lintdirs[@]}" -gt 0 ]; then
     echo "   lint scope: $(wc -l <"$report/lint-files.txt") package(s) under ${lintdirs[*]}"
 fi
 echo "== pkg-verify $slug ($manager): $n package(s) from ${#dirs[@]} director(ies)"
-"$DOCKER" run --rm "${NET[@]}" "${mounts[@]}" -v "$here:/ci-scripts:ro" -v "$report:/report" \
+"$DOCKER" run --rm "${NET[@]}" "${mounts[@]}" -v "$here:/ci-scripts:ro" -v "$report:/report" "${hookargs[@]}" \
     -e PKG_MANAGER="$manager" -e PKG_SLUG="$slug" "$image" bash /ci-scripts/pkg-verify-inside.sh
 irc=$?
 

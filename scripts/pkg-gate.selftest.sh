@@ -24,7 +24,7 @@ expect() {
 
 # docker stub: `run` with -v SRC:DST mounts; the command after the image is
 # `bash /ci-scripts/pkg-build-<fam>.sh` (write packages into /out),
-# `bash /verify.sh` (exit STUB_VERIFY_RC) or `rm -rf /w/<x>` (purge).
+# or `rm -rf /w/<x>` (purge).
 mkdir -p "$work/bin"
 cat >"$work/bin/docker" <<'EOF'
 #!/usr/bin/env bash
@@ -47,7 +47,6 @@ case "$*" in
   "bash /ci-scripts/pkg-build-rpm.sh")
     [ "${STUB_BUILD_RC:-0}" = 0 ] || exit "$STUB_BUILD_RC"
     printf 'rpm\n' >"${m[/out]}/librescrs-x-5.0.0-1.fc43.x86_64.rpm"; exit 0 ;;
-  "bash /verify.sh") echo "PASS V1 stub"; exit "${STUB_VERIFY_RC:-0}" ;;
   rm\ -rf\ /w/*) rm -rf "${m[/w]}/${3#/w/}"; exit 0 ;;
 esac
 echo "docker stub: unexpected command: $*" >&2; exit 99
@@ -70,6 +69,7 @@ consumer() {  # consumer [maintainer] [spec-changelog-maintainer] [deps.lock] [j
         "${2:-LibreSCRS <librescrs@proton.me>}" >"$r/packaging/rpm/librescrs-x.spec"
     printf 'makedepends=(python-jsonschema)\n' >"$r/packaging/arch/PKGBUILD"
     printf 'manifest2header\n' >"$r/tools/manifest2header.py"
+    # A legacy hook in the tree must not start a second container here.
     printf '#!/bin/sh\n' >"$r/packaging/ci/verify-installed.sh"
     [ -z "${3:-}" ] || printf '%s\n' "$3" >"$r/deps.lock"
     git -C "$r" init -q -b main && git -C "$r" add -A && git -C "$r" commit -q -m c
@@ -82,8 +82,8 @@ gate() {  # gate <slug> [env...]
 consumer; gate debian13; rc=$?
 test -f "$work/art/debian13/LibreX/deb/librescrs-x_5.0.0-1_amd64.deb"; built=$?
 test "$(cat "$work/art/debian13/LibreX/.built-from")" = "$(git -C "$work/repo" rev-parse HEAD)"; from=$?
-grep -q '^PASS   G3 ' "$work/log"; g3=$?
-expect "deb gate green: package in <art>/<slug>/<Repo>/deb, commit recorded, G3 ran" "0 0 0 0" "$rc $built $from $g3"
+n="$(grep -c ' bash /' "$work/docker.log")"
+expect "deb gate green: package in <art>/<slug>/<Repo>/deb, commit recorded, one container" "0 0 0 1" "$rc $built $from $n"
 grep -q 'docker.io/library/debian:13@sha256:[0-9a-f]\{64\} bash /ci-scripts/pkg-build-deb.sh' "$work/docker.log"
 expect "the build runs in the slug's image by digest" 0 $?
 gate fedora43; rc=$?
@@ -93,10 +93,8 @@ consumer "LibreSCRS <packages@librescrs.org>"; gate debian13
 expect "a stale Maintainer in debian/control is red" 1 $?
 consumer "" "LibreSCRS <packages@librescrs.org>"; gate fedora43
 expect "a stale maintainer in the spec %changelog is red" 1 $?
-consumer; gate debian13 STUB_BUILD_RC=2; rc=$?
-grep -q '^SKIP   G3 ' "$work/log"; expect "a failed build is red and G3 does not judge a stale package" "1 0" "$rc $?"
-consumer; gate debian13 STUB_VERIFY_RC=1
-expect "a failed installed-state check is red" 1 $?
+consumer; gate debian13 STUB_BUILD_RC=2
+expect "a failed build is red" 1 $?
 M="$(mkupstream)"
 consumer "" "" "LM $work/up/LM $M main"; gate debian13; rc=$?
 grep -q 'upstream packages for LM missing' "$work/log"; expect "an upstream with no packages yet is red" "1 0" "$rc $?"

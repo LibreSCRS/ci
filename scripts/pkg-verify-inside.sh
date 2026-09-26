@@ -18,6 +18,12 @@
 #       consumer's own; upstream packages are linted in their own
 #       repository); judged on the host by pkg-lint-accept.py
 #   S9  a third provider (the distribution's OpenSC) is MEASURED, not judged
+#   S10 the consumer's own installed-state assertions (PKG_VERIFY_HOOK, a
+#       script mounted by pkg-verify.sh --hook), run LAST in this same
+#       container: it may install subsets and remove packages. It sees its
+#       repository's packages under /pkg and each upstream's under
+#       /pkg-<Repository>, FAMILY=deb|rpm and PKG_MANAGER; its exit status is
+#       the verdict.
 #
 # Variant: "agent" when librescrs-agent is among the packages, else "direct"
 # when librescrs-pkcs11-direct is, else "none" (a stack below both providers).
@@ -292,6 +298,13 @@ else
     command -v rpmlint >/dev/null 2>&1; check "S8 rpmlint is installed" $?
     rpmlint "${LINT[@]}" >"$REPORT/rpmlint.txt" 2>&1
     echo "     rpmlint rc=$? ($(grep -cE ': [EW]: ' "$REPORT/rpmlint.txt") E/W lines)"
+fi
+
+# ── S10 ───────────────────────────────────────────────────────────────────
+if [ -n "${PKG_VERIFY_HOOK:-}" ]; then
+    FAMILY="$EXT" bash "$PKG_VERIFY_HOOK" 2>&1
+    hrc=$?
+    check "S10 the repository's installed-state assertions (hook rc=$hrc)" "$hrc"
 fi
 
 echo "== pkg-verify-inside $PKG_SLUG ($variant): $([ $fail -eq 0 ] && echo GREEN || echo RED)"

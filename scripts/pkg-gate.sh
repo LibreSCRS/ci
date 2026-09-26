@@ -8,11 +8,10 @@
 #   G1  a packaging recipe exists, and names the project maintainer
 #   G2  it builds, in the slug's container from images.lock, against the
 #       upstream packages already under <art>/<slug>/<Upstream>/<family>
-#   G3  the repository's own installed-state assertions pass in a fresh
-#       container (packaging/ci/verify-installed.sh, when the repository has one)
 #   G5  the build dependency the manifest tool needs is declared, consistently
-#   (G4 -- one PKCS#11 provider -- is asserted by verify-installed.sh and, over
-#   the whole stack, by pkg-verify.sh.)
+#   (What the packages leave on a machine -- the stack's checks and the
+#   repository's own installed-state hook -- is judged once, in pkg-verify.sh's
+#   clean container, not in a second container here.)
 #
 # The packages land, under their build names, in <art>/<slug>/<NAME>/<family>/,
 # which is also where the next repository up the stack finds them as upstream.
@@ -122,7 +121,7 @@ ups="$("$here/pkg-deps.sh" closure --root "$ROOT")"
 rc=$?
 check "G2 upstream closure from deps.lock" $rc
 [ "$rc" -eq 2 ] && exit 2
-MOUNTS=() VMOUNTS=()
+MOUNTS=()
 while read -r up _; do
     [ -n "$up" ] || continue
     updir="$ART/$SLUG/$up/$FAMILY"
@@ -131,7 +130,6 @@ while read -r up _; do
         fail=1; continue
     fi
     MOUNTS+=(-v "$updir:/upstream/$up:ro")
-    VMOUNTS+=(-v "$updir:/pkg-$up:ro")
 done <<<"$ups"
 
 # ── G2 ────────────────────────────────────────────────────────────────────
@@ -182,26 +180,6 @@ if [ "$rc" -eq 0 ]; then
     test "$n" -gt 0; check "G2 built $n $FAMILY package(s)" $?
     find "$OUT" -maxdepth 1 -type f -printf '     %f\n' | sort
     printf '%s\n' "$head_sha" >"$ART/$SLUG/$NAME/.built-from"
-fi
-
-# ── G3 ────────────────────────────────────────────────────────────────────
-# Building a package proves less than installing one. This runs in a container
-# that never had a source tree.
-if [ "$rc" -ne 0 ]; then
-    note SKIP "G3 not run: the build failed, and asserting over a stale package is worse than not asserting"
-    fail=1
-elif [ -f "$ROOT/packaging/ci/verify-installed.sh" ]; then
-    VLOG="$LOG/verify-$NAME-$SLUG.txt"
-    "$DOCKER" run --rm "${NET[@]}" -v "$OUT:/pkg:ro" "${VMOUNTS[@]}" \
-        -v "$ROOT/packaging/ci/verify-installed.sh:/verify.sh:ro" \
-        -e FAMILY="$FAMILY" -e PKG_MANAGER="$MANAGER" -e PKG_SLUG="$SLUG" \
-        "$IMAGE" bash /verify.sh >"$VLOG" 2>&1
-    vrc=$?
-    check "G3 installed-state assertions ($VLOG)" $vrc
-    [ "$vrc" -eq 0 ] || tail -n 40 "$VLOG"
-    grep -E '^(PASS|FAIL) ' "$VLOG" | sed 's/^/   /'
-else
-    note INFO "G3 $NAME carries no packaging/ci/verify-installed.sh; the stack is judged by pkg-verify.sh"
 fi
 
 # ── G5 ────────────────────────────────────────────────────────────────────
