@@ -11,6 +11,7 @@ passed.
 Usage:
   run-gates.py --gates "G1 G2 ..." [--root DIR] [--repo NAME] [--build-dir D]
                [--build-log F] [--warning-leg W] [--floor FILE]
+               [--recipe-args "..."]
 
 The repository judged is --root, else REPO_ROOT, else $GITHUB_WORKSPACE, else
 the git checkout around the current directory. Its name (deps-lock asks for
@@ -25,6 +26,7 @@ Exit codes -- a consumer writes the condition as `rc = 0`, never "not 1":
      not judge
 """
 import argparse
+import shlex
 import os
 import subprocess
 import sys
@@ -41,6 +43,11 @@ class Cannot(Exception):
 # "bash4" needs bash 4 or later (mapfile, associative arrays).
 GATES = {
     "check-skip-reasons": ("bash4", "check-skip-reasons.sh", lambda c: [], ()),
+    # The Arch recipe builds this repository's signed tag; repository-specific
+    # options (--pin, --srcname, --p11kit-option) come through --recipe-args.
+    "check-recipe": ("bash4", "check-recipe",
+                     lambda c: ["--root", c["root"], "--repo", c["repo"]]
+                     + shlex.split(c["recipe_args"]), ()),
     "check-workflows": ("python", "check-workflows.py", lambda c: [], ()),
     "selftests": ("bash4", "run-selftests.sh", lambda c: ["--root", c["root"]], ()),
     # Everything in the tree that states a version states VERSION's, and the
@@ -102,6 +109,7 @@ def main(argv):
     ap.add_argument("--build-log", default="")
     ap.add_argument("--warning-leg", default="", help="warning-baseline leg")
     ap.add_argument("--floor", default="", help="test-floor file (default ci/test-floor.txt)")
+    ap.add_argument("--recipe-args", default="", help="extra check-recipe options")
     args = ap.parse_args(argv)
 
     try:
@@ -119,7 +127,7 @@ def main(argv):
                 or os.path.basename(root))
         ctx = {"root": root, "repo": repo, "build_dir": args.build_dir,
                "build_log": args.build_log, "warning_leg": args.warning_leg,
-               "floor": args.floor}
+               "floor": args.floor, "recipe_args": args.recipe_args}
         missing = sorted({INPUT_FLAG[i] for g in gates for i in GATES[g][3] if not ctx[i]})
         if missing:
             raise Cannot(f"{', '.join(gates)} need {', '.join('--' + m for m in missing)}")

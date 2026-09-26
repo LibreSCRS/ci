@@ -149,6 +149,16 @@ expect "18 deps-lock: a malformed lock row fails" 1 "$?" "deps.lock"
 (cd "$T" && REPO_ROOT="$d" python3 "$RG" --repo LibreKDE --gates deps-lock-build) >"$out" 2>&1
 expect "19 deps-lock-build: no build dir is 'cannot judge'" 2 "$?" "build-dir"
 
+# --- check-recipe gets root, name and the pass-through options: a --pin whose
+#     FetchContent file does not exist is refused, so the option arrived.
+d=$(fixture rc)
+(cd "$T" && REPO_ROOT="$d" python3 "$RG" --gates check-recipe) >"$out" 2>&1
+expect "22 check-recipe: no recipe in the checkout cannot be judged" 2 "$?" "PKGBUILD"
+mkdir -p "$d/packaging/arch"; printf 'pkgname=x\n' > "$d/packaging/arch/PKGBUILD"; commit "$d"
+(cd "$T" && REPO_ROOT="$d" python3 "$RG" --gates check-recipe \
+    --recipe-args=--bogus-option) >"$out" 2>&1
+expect "23 check-recipe: --recipe-args reach the script" 2 "$?" "usage: check-recipe"
+
 # --- check-version-lockstep reaches check-version.sh against this root
 d=$(fixture ver)
 printf '5.0.0\n' > "$d/VERSION"

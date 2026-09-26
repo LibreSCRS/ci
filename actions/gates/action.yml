@@ -16,7 +16,7 @@ description: >-
 #       build-dir: build
 #       build-log: build.log
 #
-# Known gates: check-skip-reasons, check-workflows, selftests, check-version,
+# Known gates: check-recipe (recipe-args), check-skip-reasons, check-workflows, selftests, check-version,
 # check-version-lockstep, deps-lock, deps-lock-build (build-dir), test-floor
 # (build-dir, floor), warning-gate (build-dir, build-log, warning-leg).
 #
@@ -56,6 +56,12 @@ inputs:
     description: The test-floor file, relative to the consumer root. Default ci/test-floor.txt.
     required: false
     default: ''
+  recipe-args:
+    description: >-
+      Extra check-recipe options (e.g. `--pin _qcbor_commit=cmake/FetchQCBOR.cmake`),
+      split like a shell word list.
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -69,6 +75,7 @@ runs:
         GATES_BUILD_LOG: ${{ inputs.build-log }}
         GATES_WARNING_LEG: ${{ inputs.warning-leg }}
         GATES_FLOOR: ${{ inputs.floor }}
+        GATES_RECIPE_ARGS: ${{ inputs.recipe-args }}
       run: |
         python3 "$GITHUB_ACTION_PATH/../../scripts/run-gates.py" \
           --gates "$GATES_LIST" \
@@ -76,4 +83,5 @@ runs:
           --build-dir "$GATES_BUILD_DIR" \
           --build-log "$GATES_BUILD_LOG" \
           --warning-leg "$GATES_WARNING_LEG" \
-          --floor "$GATES_FLOOR"
+          --floor "$GATES_FLOOR" \
+          --recipe-args="$GATES_RECIPE_ARGS"
