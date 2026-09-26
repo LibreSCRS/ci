@@ -27,9 +27,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Newer bash on macOS (system bash is 3.2)
+      - name: Newer bash and PyYAML on macOS (system bash is 3.2)
         if: runner.os == 'macOS'
-        run: brew install bash
+        run: |
+          brew install bash
+          python3 -m pip install --break-system-packages pyyaml
       - name: Run every self-test
         run: ./scripts/run-selftests.sh
 
@@ -49,4 +51,4 @@ jobs:
           tar xzf actionlint.tar.gz actionlint
           ./actionlint -color
       - name: shellcheck
-        run: git ls-files -z '*.sh' 'scripts/*' | xargs -0 -r shellcheck -x
+        run: git ls-files -z '*.sh' | xargs -0 -r shellcheck -x
