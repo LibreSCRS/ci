@@ -23,7 +23,7 @@
 #
 #   --arms     which arms to run (default: all four). A repository with no CMake
 #              build (the macOS host) runs `--arms lockstep`; that is a
-#              statement in its profile, never a silent skip here.
+#              statement in the step's gates: list, never a silent skip here.
 #   --min <n>  passed to the floors arm (see there).
 #   --section <v>  print that CHANGELOG section on stdout (the release-notes
 #              extractor); exits 1 when it is missing or blank.
