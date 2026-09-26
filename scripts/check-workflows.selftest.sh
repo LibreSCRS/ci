@@ -925,7 +925,7 @@ printf 'check-format-scope\ntest-manifest-gate build\n' > "$d.profiles/Consumer.
 expect "G1 all four rules green is green" 0 "$(cw "$d")" \
     "check-workflows: wired=0 timeouts=0 order=0 pins=0"
 
-d=$(two_phase_workflow | sed '0,/timeout-minutes: 5/{/timeout-minutes: 5/d}' | consumer g2)
+d=$(two_phase_workflow | awk '!done && /timeout-minutes: 5/ { done = 1; next } { print }' | consumer g2)
 printf 'check-format-scope\ntest-manifest-gate build\n' > "$d.profiles/Consumer.txt"
 expect "G2 one rule red is red, and the summary names it" 1 "$(cw "$d")" \
     "job 'lint' has no timeout-minutes" "timeouts=1"
@@ -933,7 +933,7 @@ expect "G2 one rule red is red, and the summary names it" 1 "$(cw "$d")" \
 d=$(two_phase_workflow | consumer g3)
 expect "G3 one rule that cannot judge is 'cannot judge', not green" 2 "$(cw "$d")" "wired=2"
 
-d=$(two_phase_workflow | sed '0,/timeout-minutes: 5/{/timeout-minutes: 5/d}' | consumer g4)
+d=$(two_phase_workflow | awk '!done && /timeout-minutes: 5/ { done = 1; next } { print }' | consumer g4)
 expect "G4 a finding wins over a rule that could not judge" 1 "$(cw "$d")" "wired=2" "timeouts=1"
 
 # ===================== H. where the root and the profile key come from =====

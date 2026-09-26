@@ -137,10 +137,10 @@ case "$out" in *"no manifest at ci/test-manifest.linux.txt"*) ;; *) echo "  case
 # --- case 7: --update refuses an empty listing, and leaves the file alone
 root="$(make_env c7 "$three")"
 ( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --update build linux >/dev/null 2>&1 )
-before="$(sha256sum "$root/ci/test-manifest.linux.txt" | cut -d' ' -f1)"
+before="$(cksum < "$root/ci/test-manifest.linux.txt")"
 ( cd "$root" && { echo '#!/usr/bin/env bash'; printf 'cat <<%s\n' "'LIST'"; printf '%s\n' "$empty"; echo "LIST"; } > bin/ctest; chmod +x bin/ctest )
 out="$( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --update build linux 2>&1 )"; rc=$?
-after="$(sha256sum "$root/ci/test-manifest.linux.txt" | cut -d' ' -f1)"
+after="$(cksum < "$root/ci/test-manifest.linux.txt")"
 check 7 2 $rc
 if [ -n "$before" ] && [ "$before" = "$after" ]; then
     echo "case 7b: OK   — manifest unchanged after a refused --update"
