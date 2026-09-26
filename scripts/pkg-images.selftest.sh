@@ -101,5 +101,27 @@ PKG_IMAGES_LOCK="$work/lock" PKG_IMAGES_RESOLVER="$work/resolver-down" PKG_IMAGE
     "$tool" refresh >"$work/out" 2>&1
 expect "unreachable registry cannot be judged" 2 $?
 
+# install-tools: every tool lands executable with its sum, a present good file
+# is kept, a tampered download is deleted and refused.
+PKG_IMAGES_LOCK="$work/lock.before" PKG_IMAGES_FETCH="$work/fetch-good" \
+    "$tool" install-tools "$work/tools" >"$work/out" 2>"$work/err"; rc=$?
+n="$(wc -l <"$work/out")"
+x=0; while read -r _ f; do [ -x "$f" ] || x=1; done <"$work/out"
+grep -q '^appimage-runtime .*/runtime-x86_64$' "$work/out"; rt=$?
+expect "install-tools puts every tool in place, executable, and names the runtime file" "0 4 0 0" "$rc $n $x $rt"
+touch -d '2000-01-01' "$work/tools/appimagetool-x86_64.AppImage"
+PKG_IMAGES_LOCK="$work/lock.before" PKG_IMAGES_FETCH="$work/fetch-bad" \
+    "$tool" install-tools "$work/tools" >"$work/out" 2>"$work/err"; rc=$?
+test "$(stat -c %Y "$work/tools/appimagetool-x86_64.AppImage")" = "$(date -d '2000-01-01' +%s)"
+expect "install-tools keeps a file whose sum is already right (no download)" "0 0" "$rc $?"
+rm -rf "$work/tools"
+PKG_IMAGES_LOCK="$work/lock.before" PKG_IMAGES_FETCH="$work/fetch-bad" \
+    "$tool" install-tools "$work/tools" >"$work/out" 2>"$work/err"; rc=$?
+left="$(find "$work/tools" -type f | wc -l)"
+expect "install-tools over tampered bytes is red and leaves nothing behind" "1 0" "$rc $left"
+PKG_IMAGES_LOCK="$work/lock.before" PKG_IMAGES_FETCH="$work/resolver-down" \
+    "$tool" install-tools "$work/tools2" >"$work/out" 2>"$work/err"
+expect "install-tools with no network cannot be judged" 2 $?
+
 [ "$fail" -eq 0 ] || { echo "pkg-images.selftest: FAILED"; exit 1; }
 echo "selftest: $cases cases, $red red-proved"

@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: appimage-tools
+description: >
+  Install the AppImage tools images.lock pins (linuxdeploy,
+  linuxdeploy-plugin-qt, appimagetool and the type2 runtime), each from its
+  versioned release URL and held to its sha256, and hand back their paths.
+  The consumer passes `runtime` to `appimagetool --runtime-file`; without it
+  appimagetool downloads a runtime from a moving `continuous` URL itself.
+
+inputs:
+  dir:
+    description: Directory the tools are installed into (a file already there with the right sha256 is kept).
+    required: false
+    default: ''
+
+outputs:
+  dir:
+    description: The directory holding the tools.
+    value: ${{ steps.tools.outputs.dir }}
+  linuxdeploy:
+    description: Path of linuxdeploy-x86_64.AppImage.
+    value: ${{ steps.tools.outputs.linuxdeploy }}
+  linuxdeploy-plugin-qt:
+    description: Path of linuxdeploy-plugin-qt-x86_64.AppImage.
+    value: ${{ steps.tools.outputs.linuxdeploy-plugin-qt }}
+  appimagetool:
+    description: Path of appimagetool-x86_64.AppImage.
+    value: ${{ steps.tools.outputs.appimagetool }}
+  runtime:
+    description: Path of the type2 runtime, for `appimagetool --runtime-file`.
+    value: ${{ steps.tools.outputs.appimage-runtime }}
+  lock:
+    description: Path of the images.lock the tools were taken from.
+    value: ${{ steps.tools.outputs.lock }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install the pinned AppImage tools
+      id: tools
+      shell: bash
+      env:
+        IN_DIR: ${{ inputs.dir }}
+      run: |
+        set -uo pipefail
+        dir="${IN_DIR:-$RUNNER_TEMP/appimage-tools}"
+        rc=0
+        "$GITHUB_ACTION_PATH/../../scripts/pkg-images" install-tools "$dir" >"$RUNNER_TEMP/appimage-tools.txt" || rc=$?
+        echo "APPIMAGE_TOOLS_RC=$rc"
+        [ "$rc" = 0 ] || exit "$rc"
+        cat "$RUNNER_TEMP/appimage-tools.txt"
+        {
+          echo "dir=$(cd "$dir" && pwd)"
+          echo "lock=$(cd "$GITHUB_ACTION_PATH/../.." && pwd)/images.lock"
+          while read -r name path; do echo "$name=$path"; done <"$RUNNER_TEMP/appimage-tools.txt"
+        } >>"$GITHUB_OUTPUT"
+        for k in linuxdeploy linuxdeploy-plugin-qt appimagetool appimage-runtime; do
+          grep -q "^$k " "$RUNNER_TEMP/appimage-tools.txt" \
+            || { echo "::error::images.lock names no tool '$k'"; exit 2; }
+        done

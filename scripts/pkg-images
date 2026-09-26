@@ -10,6 +10,12 @@
 #   pkg-images slugs             print every slug, one per line
 #   pkg-images tool <name>       print "<version> <url> <sha256>"
 #   pkg-images check             the form of the lock (offline)
+#   pkg-images install-tools <dir>
+#                                every `tool` row into DIR (file name = the
+#                                URL's last segment, executable), each held to
+#                                its sha256; a file already there with the right
+#                                sum is kept, a wrong one is deleted and refused.
+#                                Prints "<name> <path>" per tool.
 #   pkg-images refresh [--dry-run]
 #                                re-resolve every image digest from its
 #                                registry and rewrite the lock; download every
@@ -152,6 +158,31 @@ cmd_refresh() {
     return "$bad"
 }
 
+cmd_install_tools() {
+    local dir="$1" kind name ver url sum f got bad=0 n=0
+    mkdir -p "$dir" || die2 "cannot create $dir"
+    dir="$(cd "$dir" && pwd)" || die2 "cannot enter $dir"
+    while read -r kind name ver url sum; do
+        n=$((n + 1))
+        f="$dir/${url##*/}"
+        if [ -f "$f" ] && [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$sum" ]; then
+            :
+        else
+            rm -f "$f"
+            fetch "$url" "$f" || { echo "pkg-images: cannot download $name from $url" >&2; rm -f "$f"; return 2; }
+            got="$(sha256sum "$f" | cut -d' ' -f1)"
+            if [ "$got" != "$sum" ]; then
+                echo "pkg-images: $name $ver: sha256 $got, the lock says $sum -- deleted" >&2
+                rm -f "$f"; bad=1; continue
+            fi
+        fi
+        chmod +x "$f"
+        printf '%s %s\n' "$name" "$f"
+    done < <(rows tool)
+    [ "$n" -gt 0 ] || die2 "the lock names no tool"
+    return "$bad"
+}
+
 cmd="${1:-}"; shift || true
 case "$cmd" in
     get)     [ $# -eq 1 ] || die2 "usage: get <slug>"; image_row "$1" | awk '{ print $3 }' ;;
@@ -165,5 +196,6 @@ case "$cmd" in
              [ -n "$r" ] || die2 "unknown tool '$1'"; printf '%s\n' "$r" ;;
     check)   cmd_check ;;
     refresh) cmd_refresh "$@" ;;
-    *) die2 "usage: pkg-images get|manager|family|slugs|tool|check|refresh" ;;
+    install-tools) [ $# -eq 1 ] || die2 "usage: install-tools <dir>"; cmd_install_tools "$1" ;;
+    *) die2 "usage: pkg-images get|manager|family|slugs|tool|check|refresh|install-tools" ;;
 esac
