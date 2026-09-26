@@ -166,7 +166,10 @@ else
 fi
 
 if [ "$MANAGER" = dnf ]; then
-    dnf -y -q builddep "${defines[@]}" "$bspec" >/dev/null
+    # --allowerasing: the build container is disposable (a mock chroot in all
+    # but name), and a slim image's stand-ins -- systemd-standalone-tmpfiles on
+    # Fedora 44 -- conflict with the full packages a recipe builds against.
+    dnf -y -q builddep --allowerasing "${defines[@]}" "$bspec" >/dev/null
 else
     mapfile -t brs < <(rpmspec -q --buildrequires "${defines[@]}" "$bspec" | sed -E 's/[[:space:]]+//g')
     [ "${#brs[@]}" -gt 0 ] || { echo "pkg-build-rpm: rpmspec listed no BuildRequires" >&2; exit 1; }
