@@ -85,7 +85,12 @@ a = sys.argv[1:]
 cmd = " ".join(a[:2])
 log(" ".join(a))
 if cmd == "auth status":
-    sys.exit(1 if os.environ.get("STUB_GH_UNAUTH") else 0)
+    # Like gh: any broken stored account fails it, even with a good active one.
+    sys.exit(1 if os.environ.get("STUB_GH_UNAUTH") or os.environ.get("STUB_GH_OTHER_BROKEN") else 0)
+if cmd == "api user":
+    if os.environ.get("STUB_GH_UNAUTH"):
+        sys.exit(1)
+    print("stub-user"); sys.exit(0)
 if cmd == "run list":
     repo = repo_of(a); wf = opt(a, "--workflow"); sha = opt(a, "--commit"); ev = opt(a, "--event")
     runs = load()
@@ -336,6 +341,8 @@ yes7; train; rc=$?
 expect_rc "T8b a signing subkey that expires within six months" 1 "$rc" "expires in less than six months"
 world t9; yes7; STUB_GH_UNAUTH=1 train; rc=$?
 expect_rc "T9 gh not authenticated is cannot-judge" 2 "$rc" "gh is not authenticated"
+world t9b; yes7; STUB_GH_OTHER_BROKEN=1 train; rc=$?
+expect_rc "T9b a broken second stored gh account does not stop the train" 0 "$rc" "gh: stub-user"
 world t10; relock LibreCelik "s/^(LibreAgent[[:space:]]+[^[:space:]]+[[:space:]]+)[0-9a-f]{40}/\\1$(printf 'a%.0s' {1..40})/" push
 yes7; train; rc=$?
 expect_rc "T10 a lock naming a commit upstream does not have" 1 "$rc" "does not exist upstream"

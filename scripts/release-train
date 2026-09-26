@@ -232,8 +232,12 @@ key_health() {
 
 preflight() {
     say "0 preflight"
-    local r bad=0 head rm br
-    gh auth status >/dev/null 2>&1 || cannot "gh is not authenticated"
+    local r bad=0 head rm br login
+    # Ask what the train uses -- the active account -- not `gh auth status`,
+    # which exits 1 when any other stored account is broken.
+    login="$(gh api user --jq .login 2>/dev/null)" && [ -n "$login" ] \
+        || cannot "gh is not authenticated"
+    echo "  gh: $login"
     for r in "${ALL[@]}"; do
         head="$(git -C "$ROOT/$r" rev-parse HEAD)"
         br="$(git -C "$ROOT/$r" symbolic-ref -q --short HEAD || echo '(detached)')"
