@@ -6,9 +6,12 @@
 # Each case builds a world: eight bare "origin" repositories and their clones
 # side by side, a modelled release key (certify-only primary, signing subkey)
 # whose public half is every repository's KEYS, and PATH shims for gh, cosign,
-# gpg-connect-agent, curl and bump-deps. git and gpg are real: the tags the
-# train signs are real signed tags, judged by the real verify-release-tag.sh,
-# pushed to the fake remotes. The gh shim models GitHub from those remotes: a
+# gpg-connect-agent and curl -- the network services, none of them on the pin
+# path. git, gpg and bump-deps are real: the deps.lock files are written by the
+# real `bump-deps to-head` (once, into a template every world copies) and every
+# lock, freeze and `check --tag` the train runs is the real tool over the fake
+# remotes; the tags the train signs are real signed tags, judged by the real
+# verify-release-tag.sh, pushed to the fake remotes. The gh shim models GitHub from those remotes: a
 # CI run exists for every pushed commit, a release run and a release exist
 # for every pushed tag, a rehearsal run for every dispatch; each can be made
 # red per repository. The answers to the train's questions come from a file.
@@ -159,39 +162,6 @@ ref=$(git --git-dir="$STUB_REMOTES/LibreSCRS.github.io.git" show main:data/artif
 [ -n "${STUB_SITE_STALE:-}" ] && ref=4.2.0
 printf '<html>%s downloads for %s</html>\n' "$url" "$ref"
 SH
-cat > "$shims/bump-deps" <<'SH'
-#!/usr/bin/env bash
-# A model of bump-deps: behind counts from a state file, to-head commits.
-set -u
-declare -A EXPECT=([LibreAgent]="LibreMiddleware" [LibreLinux]="LibreMiddleware LibreAgent"
-  [LibreDarwin]="LibreMiddleware LibreAgent" [LibreCelik]="LibreAgent" [LibreKDE]="LibreAgent" [LibreMac]="LibreAgent")
-cmd=$1; shift; ws=""; root=""; tag=""; repos=()
-while [ "$#" -gt 0 ]; do
-  case "$1" in --workspace) ws=$2; shift ;; --root) root=$2; shift ;; --tag) tag=$2; shift ;; *) repos+=("$1") ;; esac; shift
-done
-echo "$cmd ${repos[*]} root=$root tag=$tag" >> "$STUB_STATE/bump.log"
-behind() { awk -v c="$1" -v d="$2" '$1==c && $2==d {n=$3} END {print n+0}' "$STUB_STATE/behind" 2>/dev/null || echo 0; }
-[ "${#repos[@]}" -gt 0 ] || repos=(LibreMiddleware LibreAgent LibreLinux LibreDarwin LibreCelik LibreKDE LibreMac)
-case "$cmd" in
-  status)
-    echo "consumer dep locked upstream behind source product-paths"
-    for c in "${repos[@]}"; do for d in ${EXPECT[$c]:-}; do echo "$c $d aaaa bbbb $(behind "$c" "$d") deps.lock -"; done; done ;;
-  to-head)
-    for c in "${repos[@]}"; do
-      for d in ${EXPECT[$c]:-}; do
-        [ "$(behind "$c" "$d")" -gt 0 ] || continue
-        echo "$d $(git --git-dir="$STUB_REMOTES/$d.git" rev-parse main)" >> "$ws/$c/deps.lock"
-        git -C "$ws/$c" commit -q -m "build: track $d" -- deps.lock
-        grep -v "^$c $d " "$STUB_STATE/behind" > "$STUB_STATE/behind.new"; mv "$STUB_STATE/behind.new" "$STUB_STATE/behind"
-      done
-    done ;;
-  check)
-    if [ -n "$root" ]; then
-      case ",${STUB_TAGCHECK_RED:-}," in *",$(basename "$root"),"*) exit 1 ;; esac; exit 0
-    fi
-    exit "${STUB_BUMP_CHECK_RC:-0}" ;;
-esac
-SH
 chmod 755 "$shims"/*
 
 # ----------------------------------------------------------------- world --
@@ -203,19 +173,23 @@ PFPR="$(G "$keys" --with-colons --list-keys | awk -F: '$1=="fpr"{print $10; exit
 G "$keys" --quick-add-key "$PFPR" ed25519 sign 2y >/dev/null 2>&1 || exit 2
 GNUPGHOME="$keys" gpgconf --kill all >/dev/null 2>&1
 
-world() {  # world <name>: a fresh world; sets W and the environment for it
-    W="$top/$1"; mkdir -p "$W/remotes" "$W/root" "$W/state"
-    cp -a "$keys" "$W/gnupg"
-    export GNUPGHOME="$W/gnupg"
-    GRIP="$(gpg --batch --with-colons --with-keygrip --list-secret-keys "$PFPR" 2>/dev/null \
-            | awk -F: '$1=="ssb"{s=1} s && $1=="grp"{print $10; exit}')"
-    gpg --batch --armor --export "$PFPR" > "$W/KEYS" 2>/dev/null
-    printf '[user]\n\tname = t\n\temail = t@invalid\n[commit]\n\tgpgSign = false\n[tag]\n\tgpgSign = false\n[init]\n\tdefaultBranch = main\n' > "$W/gitconfig"
-    export GIT_CONFIG_GLOBAL="$W/gitconfig"
-    local r d
+# The template every world copies: the eight repositories, locked by the real
+# `bump-deps to-head` and pushed. Clones and locks name their origin through
+# $top/cur, which world() points at the world in use.
+export BUMP_DEPS_URL_BASE="file://$top/cur/remotes"
+export GIT_CONFIG_GLOBAL="$top/gitconfig"
+printf '[user]\n\tname = t\n\temail = t@invalid\n[commit]\n\tgpgSign = false\n[tag]\n\tgpgSign = false\n[init]\n\tdefaultBranch = main\n[advice]\n\tdetachedHead = false\n' > "$GIT_CONFIG_GLOBAL"
+CONTRACT=LibreMacAgentClient/Tests/LibreMacAgentClientTests/Contract
+template() {
+    local t="$top/template" r d
+    mkdir -p "$t/remotes" "$t/root"; ln -sfn "$t" "$top/cur"
+    GNUPGHOME="$keys" gpg --batch --armor --export "$PFPR" > "$t/KEYS" 2>/dev/null
+    GNUPGHOME="$keys" gpgconf --kill all >/dev/null 2>&1
     for r in "${CODE[@]}" "$SITE"; do
-        git init -q --bare "$W/remotes/$r.git"
-        d="$W/root/$r"; git init -q "$d"
+        git init -q --bare "$t/remotes/$r.git"
+        git -C "$t/remotes/$r.git" config uploadpack.allowFilter true
+        git -C "$t/remotes/$r.git" config uploadpack.allowAnySHA1InWant true
+        d="$t/root/$r"; git init -q "$d"
         if [ "$r" = "$SITE" ]; then
             mkdir -p "$d/tools" "$d/content/downloads" "$d/data"
             printf 'downloads\n' > "$d/content/downloads/_index.md"
@@ -229,22 +203,49 @@ PYG
         else
             printf '%s\n' "$V" > "$d/VERSION"
             printf '# Changelog\n\n## [Unreleased] — %s\n\n- an entry\n\n## [4.2.0]\n\n- older\n' "$V" > "$d/CHANGELOG.md"
-            cp "$W/KEYS" "$d/KEYS"; mkdir -p "$d/ci"
+            cp "$t/KEYS" "$d/KEYS"; mkdir -p "$d/ci"
             case "$r" in
                 LibreDarwin|LibreMac) printf '# notes only\n' > "$d/ci/release-assets.txt" ;;
                 *) printf '*.orig.tar.gz  source\nSHA256SUMS  sums\n*.sigstore.json  bundles\n' > "$d/ci/release-assets.txt" ;;
             esac
-            printf '# deps\n' > "$d/deps.lock"
+            case "$r" in
+                LibreAgent)  # what the vendored LibreMac contract is regenerated from
+                    mkdir -p "$d/wire" "$d/include/LibreSCRS/Agent/operations"
+                    echo '{"schema":1,"vocabularies":{}}' > "$d/wire/wire-vocabulary.json"
+                    printf '%s\n' 'inline constexpr auto kLongestDeadline{300000};' \
+                        "inline constexpr auto kMaxSequentialPromptBudget = a + b; // budget-ms: 300'000" \
+                        > "$d/include/LibreSCRS/Agent/operations/PromptPolicy.h" ;;
+                LibreMac)
+                    mkdir -p "$d/$CONTRACT"
+                    echo '{"schema":1,"old":true}' > "$d/$CONTRACT/wire-vocabulary.json"
+                    echo 'max-sequential-ms 1' > "$d/$CONTRACT/prompt-policy.txt" ;;
+            esac
         fi
         git -C "$d" add -A && git -C "$d" commit -q -m "initial $r"
-        git -C "$d" remote add origin "$W/remotes/$r.git"
+        git -C "$d" remote add origin "$top/cur/remotes/$r.git"
         git -C "$d" push -q origin main
     done
+    bash "$here/bump-deps" to-head --workspace "$t/root" > "$top/template.log" 2>&1 \
+        || { cat "$top/template.log"; echo "the real bump-deps to-head could not lock the template" >&2; return 1; }
+    for r in "${CODE[@]}"; do git -C "$t/root/$r" push -q origin main || return 1; done
+    bash "$here/bump-deps" check --workspace "$t/root" > "$top/template.log" 2>&1 \
+        || { cat "$top/template.log"; echo "the template's locks are not green" >&2; return 1; }
+}
+template || exit 2
+
+world() {  # world <name>: a fresh copy of the template; sets W and the environment for it
+    W="$top/$1"; mkdir -p "$W/state"
+    cp -a "$top/template/remotes" "$top/template/root" "$W/"
+    ln -sfn "$W" "$top/cur"
+    cp -a "$keys" "$W/gnupg"
+    export GNUPGHOME="$W/gnupg"
+    GRIP="$(gpg --batch --with-colons --with-keygrip --list-secret-keys "$PFPR" 2>/dev/null \
+            | awk -F: '$1=="ssb"{s=1} s && $1=="grp"{print $10; exit}')"
     : > "$W/answers"
     export STUB_STATE="$W/state" STUB_REMOTES="$W/remotes" STUB_GRIP="$GRIP"
 }
 train() {  # train <args...>: the subject in the current world; output to $W/out
-    env PATH="$shims:$PATH" BUMP_DEPS="$shims/bump-deps" EXPECTED_FPR="$PFPR" \
+    env PATH="$shims:$PATH" EXPECTED_FPR="$PFPR" \
         RELEASE_TRAIN_TTY="$W/answers" RELEASE_TRAIN_POLL=0 RELEASE_TRAIN_WAIT=0 \
         SITE_URL_EN=https://site/downloads/ SITE_URL_SR=https://site/sr/downloads/ \
         bash "$subject" "$V" --root "$W/root" "$@" > "$W/out" 2>&1 < /dev/null
@@ -266,6 +267,17 @@ no_remote_tags() { local r; for r in "${CODE[@]}"; do remote_has_tag "$r" && ret
 all_remote_tags() { local r; for r in "${CODE[@]}"; do remote_has_tag "$r" || return 1; done; return 0; }
 dispatches() { grep -c '^workflow run release.yml' "$W/state/gh.log" 2>/dev/null || true; }
 yes7() { answers yes yes yes yes yes yes yes yes; }
+yes10() { answers yes yes yes yes yes yes yes yes yes yes yes; }
+land() {  # land <repo> <message>: somebody else lands a commit on <repo>'s main
+    git -C "$W/root/$1" commit -q --allow-empty -m "$2" && git -C "$W/root/$1" push -q origin main
+}
+relock() {  # relock <repo> <sed-expr> [push]: edit <repo>'s deps.lock; with push, land it
+    sed -i.bak -E "$2" "$W/root/$1/deps.lock" && rm -f "$W/root/$1/deps.lock.bak"
+    [ "${3:-}" != push ] || { git -C "$W/root/$1" commit -q -am "edit deps.lock" && git -C "$W/root/$1" push -q origin main; }
+}
+bd() { bash "$here/bump-deps" "$@" > "$W/out" 2>&1; }
+tag_of() { git --git-dir="$W/remotes/$1.git" rev-parse "$V^{commit}"; }
+lock_on_origin() { git --git-dir="$W/remotes/$1.git" show "$3:deps.lock" | awk -v d="$2" '$1 == d { print $3 }'; }
 
 # ------------------------------------------------------------------ cases --
 # T1 -- the whole train over a world that needs no lock: five tag layers and
@@ -280,6 +292,21 @@ assert "T1 the site's origin publishes the release's data" \
     bash -c 'git --git-dir="$1" show main:data/artifacts.json | grep -q "\"ref\": \"$2\""' _ "$W/remotes/$SITE.git" "$V"
 assert "T1 the tag object on origin verifies against KEYS" \
     env REPO_ROOT="$W/root/LibreAgent" EXPECTED_FPR="$PFPR" bash "$here/verify-release-tag.sh" tag "$V"
+assert "T1 LibreLinux's released deps.lock names the LibreAgent and LibreMiddleware tag commits" bash -c \
+    '[ "$1" = "$2" ] && [ "$3" = "$4" ]' _ "$(lock_on_origin LibreLinux LibreAgent "$V")" "$(tag_of LibreAgent)" \
+    "$(lock_on_origin LibreLinux LibreMiddleware "$V")" "$(tag_of LibreMiddleware)"
+# T1b-d -- the tag-day check itself, the real bump-deps over the released world:
+# the lock the train froze IS the tag, and nothing but the commit is judged.
+bd check --root "$W/root/LibreLinux" --tag "$V"
+expect_rc "T1b check --tag on a released consumer" 0 "$?" "is $V"
+relock LibreLinux "s/^(LibreAgent[[:space:]]+[^[:space:]]+[[:space:]]+)[0-9a-f]{40}/\\1$(git -C "$W/root/LibreAgent" rev-parse "$V^{commit}~1")/"
+bd check --root "$W/root/LibreLinux" --tag "$V"
+expect_rc "T1c check --tag: a lock one commit short of the tag" 1 "$?" "but $V is"
+git -C "$W/root/LibreLinux" checkout -q -- deps.lock
+relock LibreLinux "s/^(LibreAgent[[:space:]].*)$/\\1  $V/"
+bd check --root "$W/root/LibreLinux" --tag "$V"
+expect_rc "T1d check --tag: a fourth column, even one naming the tag, is refused" 1 "$?" "drop column 4"
+git -C "$W/root/LibreLinux" checkout -q -- deps.lock
 
 # T2 -- --rehearse-only: every rehearsal, no question, nothing pushed.
 world t2; : > "$W/answers"; train --rehearse-only; rc=$?
@@ -309,24 +336,33 @@ yes7; train; rc=$?
 expect_rc "T8b a signing subkey that expires within six months" 1 "$rc" "expires in less than six months"
 world t9; yes7; STUB_GH_UNAUTH=1 train; rc=$?
 expect_rc "T9 gh not authenticated is cannot-judge" 2 "$rc" "gh is not authenticated"
-world t10; yes7; STUB_BUMP_CHECK_RC=1 train; rc=$?
-expect_rc "T10 bump-deps check red" 1 "$rc" "bump-deps check is not green"
+world t10; relock LibreCelik "s/^(LibreAgent[[:space:]]+[^[:space:]]+[[:space:]]+)[0-9a-f]{40}/\\1$(printf 'a%.0s' {1..40})/" push
+yes7; train; rc=$?
+expect_rc "T10 a lock naming a commit upstream does not have" 1 "$rc" "does not exist upstream"
+assert "T10 and the train says so before anything moves" bash -c 'grep -q "bump-deps check is not green" "$1" && ! grep -q "^workflow run" "$2" 2>/dev/null' _ "$W/out" "$W/state/gh.log"
 
-# T11 -- a lock is behind: layer 2 is bumped, shown, asked, pushed and CI
-# waited for; the rest of the train then runs on the new mains.
-world t11; printf 'LibreAgent LibreMiddleware 3\n' > "$W/state/behind"
-answers yes yes yes yes yes yes yes; train; rc=$?
+# T11 -- LibreMiddleware moved after the last lock: the real bump-deps locks
+# every layer below it in turn (LA, then LL+LD on the new LA, then LC+LK, then
+# LMAC), one question per layer, and every tag layer's `check --tag` is the
+# real tool holding those fresh locks to the tags the layer above just pushed.
+world t11; land LibreMiddleware "a late fix"
+yes10; train; rc=$?
 expect_rc "T11 a behind lock is bumped, confirmed and pushed" 0 "$rc" "LibreAgent: 1 commit(s) on top of origin main"
+assert "T11 four lock layers + five tag layers + the site: ten questions" \
+    test "$(grep -c '^ask - yes' "$W/root/release-train-$V.ledger")" = 10
 assert "T11 the bump commit is on LibreAgent's origin main" \
-    bash -c 'git --git-dir="$1" log -1 --format=%s main | grep -qx "build: track LibreMiddleware"' _ "$W/remotes/LibreAgent.git"
+    bash -c 'git --git-dir="$1" log -1 --format=%s main | grep -Eqx "build: track LibreMiddleware [0-9a-f]{12}"' _ "$W/remotes/LibreAgent.git"
 assert "T11 LibreAgent's tag is on the bump commit" \
     bash -c '[ "$(git --git-dir="$1" rev-parse "$2^{commit}")" = "$(git --git-dir="$1" rev-parse main)" ]' _ "$W/remotes/LibreAgent.git" "$V"
+assert "T11 LibreAgent's released lock is LibreMiddleware's tag, LibreMac's is LibreDarwin's" bash -c \
+    '[ "$1" = "$2" ] && [ "$3" = "$4" ]' _ "$(lock_on_origin LibreAgent LibreMiddleware "$V")" "$(tag_of LibreMiddleware)" \
+    "$(lock_on_origin LibreMac LibreDarwin "$V")" "$(tag_of LibreDarwin)"
 
 # T12 -- a lock is behind and the answer is no: nothing is pushed.
-world t12; printf 'LibreAgent LibreMiddleware 3\n' > "$W/state/behind"; answers no; train; rc=$?
+world t12; land LibreMiddleware "a late fix"; answers no; train; rc=$?
 expect_rc "T12 declining the lock push" 1 "$rc" "not confirmed -- nothing pushed"
 assert "T12 LibreAgent's origin main did not move" \
-    bash -c '[ "$(git --git-dir="$1" log -1 --format=%s main)" = "initial LibreAgent" ]' _ "$W/remotes/LibreAgent.git"
+    test "$(git --git-dir="$W/remotes/LibreAgent.git" rev-parse main)" = "$(git --git-dir="$top/template/remotes/LibreAgent.git" rev-parse main)"
 
 # T13/T14 -- declining the first tag layer leaves origin untagged; --resume
 # then reuses the local tag (the same object) and finishes.
@@ -399,8 +435,13 @@ assert "T23 every origin CHANGELOG now heads [$V] — <date>" bash -c '
     done' _ "$W/remotes" "$V"
 
 # T24 -- the consumer's locks do not name the upstream tags at tag time.
-world t24; yes7; STUB_TAGCHECK_RED=LibreLinux train; rc=$?
-expect_rc "T24 bump-deps check --tag red for a consumer" 1 "$rc" "LibreLinux: bump-deps check --tag $V is not green"
+# T24 -- a lock in the old four-column form: under the old tool it passed every
+# check until tag day, then failed `check --tag` on its column 4. Now it is a
+# finding at the preflight, before anything is pushed or tagged.
+world t24; relock LibreLinux "s/^(LibreAgent[[:space:]].*)$/\\1  main/" push
+yes7; train; rc=$?
+expect_rc "T24 a four-column lock stops the train at the preflight" 1 "$rc" "drop column 4"
+assert "T24 no tag on any origin" no_remote_tags
 
 # T25-T27 -- usage and cannot-judge.
 world t25; train --rehearse-only --prepare; rc=$?
@@ -450,6 +491,35 @@ else
     cases=$((cases + 1)); fail "P2 the clause to perturb is not in the train"
 fi
 rm -f "$perturbed"
+
+# P3 -- a bump-deps whose to-head writes column 4 again (the defect this format
+# change removed) must be stopped before any tag: the real check refuses what
+# the regressed writer produced, at the freeze.
+pbd="$here/.bump-deps.perturbed.$$"
+trap 'rm -f "$perturbed" "$pbd"; cleanup' EXIT
+old_w="printf '%-16s %-46s %s\\n' \"\$d\" \"\$URL_BASE/\$d\" \"\${T_SHA[\$d]}\""
+cases=$((cases + 1)); red=$((red + 1))
+if python3 - "$here/bump-deps" "$pbd" "$old_w" <<'PYP'
+import sys
+src, dst, old = sys.argv[1:4]
+t = open(src).read()
+if old not in t:
+    sys.exit(1)
+open(dst, "w").write(t.replace(old, old.replace("%s\\n", "%s  main\\n")))
+PYP
+then
+    chmod 755 "$pbd"
+    world p3; land LibreMiddleware "a late fix"; yes10
+    BUMP_DEPS="$pbd" train; rc=$?
+    if [ "$rc" = 1 ] && grep -q "freeze failed" "$W/out" && no_remote_tags; then
+        pass "P3 a to-head that writes column 4 again is stopped at the freeze, no tag pushed"
+    else
+        fail "P3 the column-4 writer was not stopped before the tags (rc=$rc)" "$W/out"
+    fi
+else
+    fail "P3 the clause to perturb is not in bump-deps"
+fi
+rm -f "$pbd"
 
 if [ "$fails" -eq 0 ]; then
     echo "release-train selftest: all cases passed"
