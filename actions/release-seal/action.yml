@@ -36,6 +36,19 @@ runs:
         WANT: ${{ inputs.version }}
       run: |
         set -euo pipefail
+        # This job has no checkout: on a branch the version is the preflight's
+        # (read there from VERSION); on a tag it is derived again from the ref
+        # and must agree. publish on a branch is refused either way.
+        case "$GITHUB_REF" in
+          refs/tags/*) ;;
+          *)
+            if [ "$MODE" != rehearse ]; then
+              echo "::error::mode=$MODE on $GITHUB_REF -- only a tag ref can be published"
+              exit 1
+            fi
+            echo "rehearsal on $GITHUB_REF, version $WANT from the preflight"
+            exit 0 ;;
+        esac
         out="$("$GITHUB_ACTION_PATH/../../scripts/release-context.sh" "$MODE")"
         got="$(printf '%s\n' "$out" | sed -n 's/^version=//p')"
         if [ "$got" != "$WANT" ]; then
