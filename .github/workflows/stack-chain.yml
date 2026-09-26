@@ -170,6 +170,7 @@ jobs:
           slug: ${{ matrix.slug }}
           packages: ${{ runner.temp }}/stack/${{ matrix.slug }}
           report: ${{ runner.temp }}/report
+          lint: all
 
       - name: Keep the logs
         if: always()

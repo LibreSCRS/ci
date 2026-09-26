@@ -19,6 +19,19 @@ inputs:
     description: Directory that keeps the raw logs (upload it on failure).
     required: false
     default: ''
+  lint:
+    description: >
+      own = lint only the calling repository's packages: <dir>/<name> under each
+      `packages` directory (the layout pkg-build leaves in its `art` output);
+      the upstream packages are installed for the smoke checks and linted in
+      their own repository. all = lint every package (the whole-stack run).
+      Anything else is a directory list to lint.
+    required: false
+    default: own
+  name:
+    description: "Repository whose packages lint=own means (default: the repository part of github.repository)."
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -29,11 +42,28 @@ runs:
         IN_SLUG: ${{ inputs.slug }}
         IN_PACKAGES: ${{ inputs.packages }}
         IN_REPORT: ${{ inputs.report }}
+        IN_LINT: ${{ inputs.lint }}
+        IN_NAME: ${{ inputs.name }}
+        GH_REPOSITORY: ${{ github.repository }}
       run: |
         set -uo pipefail
         args=(--slug "$IN_SLUG")
         for d in $IN_PACKAGES; do args+=(--packages "$d"); done
         [ -z "$IN_REPORT" ] || args+=(--report "$IN_REPORT")
+        case "$IN_LINT" in
+          all) ;;
+          own)
+            name="${IN_NAME:-${GH_REPOSITORY#*/}}"
+            for d in $IN_PACKAGES; do
+              [ ! -d "$d/$name" ] || args+=(--lint "$d/$name")
+            done
+            # pkg-verify.sh: a scope with no package cannot be judged; here
+            # a missing <dir>/<name> is the same verdict, never "lint all".
+            printf '%s\n' "${args[@]}" | grep -qx -- --lint \
+              || { echo "::error::lint: own found no $name directory under: $IN_PACKAGES"; exit 2; }
+            ;;
+          *) for d in $IN_LINT; do args+=(--lint "$d"); done ;;
+        esac
         rc=0
         "$GITHUB_ACTION_PATH/../../scripts/pkg-verify.sh" "${args[@]}" || rc=$?
         echo "PKG_VERIFY_RC=$rc"

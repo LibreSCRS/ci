@@ -6,7 +6,13 @@
 # lint-accepted/.
 #
 # Usage: pkg-verify.sh --slug S --packages DIR [--packages DIR]...
-#                      [--report DIR] [--accepted DIR]
+#                      [--lint DIR]... [--report DIR] [--accepted DIR]
+#
+# --lint limits lintian / rpmlint to the packages under those directories
+# (the consumer's own); the other packages are installed for the smoke checks
+# and linted in the repository that builds them. Without --lint every package
+# is linted (the whole-stack run). A --lint directory with no package of the
+# family cannot be judged.
 #
 # Each DIR holds .deb / .rpm files (any names: build names or release asset
 # names). --report keeps the raw logs (default: a temporary directory that is
@@ -19,11 +25,12 @@ set -uo pipefail
 here="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)" || exit 2
 
 slug="" report="" accepted="$here/../lint-accepted"
-dirs=()
+dirs=() lintdirs=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --slug) slug="$2"; shift 2 ;;
         --packages) dirs+=("$2"); shift 2 ;;
+        --lint) lintdirs+=("$2"); shift 2 ;;
         --report) report="$2"; shift 2 ;;
         --accepted) accepted="$2"; shift 2 ;;
         *) echo "pkg-verify: unknown argument $1" >&2; exit 2 ;;
@@ -55,6 +62,15 @@ mkdir -p "$report" && report="$(cd "$report" && pwd)"
 cleanup() { [ "$own" = 0 ] || rm -rf "$report" 2>/dev/null || "$DOCKER" run --rm -v "$report:/r" "$image" rm -rf /r/. 2>/dev/null; }
 trap 'cleanup' EXIT
 
+rm -f "$report/lint-files.txt"
+if [ "${#lintdirs[@]}" -gt 0 ]; then
+    for d in "${lintdirs[@]}"; do
+        [ -d "$d" ] || { echo "pkg-verify: --lint $d is not a directory -- cannot judge" >&2; exit 2; }
+    done
+    find "${lintdirs[@]}" -type f -name "*.$family" -printf '%f\n' | sort -u >"$report/lint-files.txt"
+    [ -s "$report/lint-files.txt" ] || { echo "pkg-verify: no .$family package under --lint ${lintdirs[*]} -- cannot judge" >&2; exit 2; }
+    echo "   lint scope: $(wc -l <"$report/lint-files.txt") package(s) under ${lintdirs[*]}"
+fi
 echo "== pkg-verify $slug ($manager): $n package(s) from ${#dirs[@]} director(ies)"
 "$DOCKER" run --rm "${NET[@]}" "${mounts[@]}" -v "$here:/ci-scripts:ro" -v "$report:/report" \
     -e PKG_MANAGER="$manager" -e PKG_SLUG="$slug" "$image" bash /ci-scripts/pkg-verify-inside.sh

@@ -125,7 +125,12 @@ cat >"$B/systemd-analyze" <<'XEOF'
 grep -q BAD "${!#}" && { echo "$(basename "${!#}"): Command /usr/libexec/librescrs-agent is not executable"; exit 1; }
 exit 0
 XEOF
-for t in lintian rpmlint; do printf '#!/bin/sh\nexit 0\n' >"$B/$t"; done
+cat >"$B/lintian" <<'XEOF'
+#!/usr/bin/env bash
+for a in "$@"; do if [ -f "$a" ]; then basename "$a"; fi; done >"$STUB_LINT_ARGS"
+exit 0
+XEOF
+cp "$B/lintian" "$B/rpmlint"
 printf '#!/bin/sh\nexit 0\n' >"$B/timeout.real"
 cat >"$B/timeout" <<'EOF'
 #!/usr/bin/env bash
@@ -162,7 +167,7 @@ stack() {  # stack <ext> [extra-kind...]: write the fake packages
 }
 verify() {  # verify <manager> [env...]
     local m="$1"; shift
-    env PATH="$B:$PATH" STUB_ROOT="$work/root" STUB_STATE="$work/state" PKG_MANAGER="$m" PKG_SLUG=test \
+    env PATH="$B:$PATH" STUB_LINT_ARGS="$work/lint-args" STUB_ROOT="$work/root" STUB_STATE="$work/state" PKG_MANAGER="$m" PKG_SLUG=test \
         PKG_VERIFY_ROOT="$work/root" PKG_VERIFY_PKGS="$work/pkgs" PKG_VERIFY_REPORT="$work/report" "$@" \
         bash "$tool" >"$work/log" 2>&1
 }
@@ -200,6 +205,18 @@ grep -q '^FAIL S4 ' "$work/log"; expect "a module that does not load is red" "1 
 stack deb bad-unit; verify apt; rc=$?
 grep -q '^FAIL S5 ' "$work/log"; expect "a unit the verifier rejects is red" "1 0" "$rc $?"
 stack deb; rm -rf "$work/pkgs"/0/*; verify apt; expect "no package at all is red" 1 $?
+
+# lint scope: only the files named in lint-files.txt are linted and judged
+stack deb; printf 'librescrs-agent.deb\nlibrescrs-pinentry-kde.deb\n' >"$work/report/lint-files.txt"
+verify apt; rc=$?
+test "$(sort "$work/lint-args" | tr '\n' ' ')" = "librescrs-agent.deb librescrs-pinentry-kde.deb "; args=$?
+test "$(sort "$work/report/linted.txt" | tr '\n' ' ')" = "librescrs-agent librescrs-pinentry-kde "; names=$?
+expect "a lint scope lints and reports only the consumer's packages" "0 0 0" "$rc $args $names"
+stack deb; verify apt; rc=$?
+grep -qx 'liblibrescrs5.deb' "$work/lint-args"; expect "without a scope every package is linted" "0 0" "$rc $?"
+stack deb; printf 'librescrs-agent.deb\nlibrescrs-gone.deb\n' >"$work/report/lint-files.txt"
+verify apt; rc=$?
+grep -q '^FAIL S8 every package named for linting is present' "$work/log"; expect "a scope naming a package that is not there is red" "1 0" "$rc $?"
 
 [ "$fail" -eq 0 ] || { echo "pkg-verify-inside.selftest: FAILED"; exit 1; }
 echo "selftest: $cases cases, $red red-proved"

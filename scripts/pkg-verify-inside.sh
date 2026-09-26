@@ -13,8 +13,10 @@
 #   S6  every D-Bus and polkit file of ours is on a path the daemons read
 #   S7  the direct <-> agent switch behaves as the documented contract for
 #       this package manager (both the documented command and the bare one)
-#   S8  lintian / rpmlint over every package file (judged on the host by
-#       pkg-lint-accept.py; raw output to /report)
+#   S8  lintian / rpmlint over the packages this run judges (all of them, or
+#       only the file names listed in /report/lint-files.txt -- the
+#       consumer's own; upstream packages are linted in their own
+#       repository); judged on the host by pkg-lint-accept.py
 #   S9  a third provider (the distribution's OpenSC) is MEASURED, not judged
 #
 # Variant: "agent" when librescrs-agent is among the packages, else "direct"
@@ -255,7 +257,18 @@ fi
 
 # ── S8 ────────────────────────────────────────────────────────────────────
 : >"$REPORT/linted.txt"
-for n in "${!FILE[@]}"; do echo "$n" >>"$REPORT/linted.txt"; done
+LINT=()
+if [ -f "$REPORT/lint-files.txt" ]; then
+    declare -A want=()
+    while IFS= read -r b; do [ -n "$b" ] && want[$b]=1; done <"$REPORT/lint-files.txt"
+    for f in "${ALL[@]}"; do [ -n "${want[$(basename "$f")]+x}" ] && LINT+=("$f"); done
+    test "${#LINT[@]}" -eq "${#want[@]}" -a "${#LINT[@]}" -gt 0
+    check "S8 every package named for linting is present (${#LINT[@]} of ${#want[@]})" $?
+else
+    LINT=("${ALL[@]}")
+fi
+for f in "${LINT[@]}"; do name_of "$f" >>"$REPORT/linted.txt"; done
+info "S8 linting: $(for f in "${LINT[@]}"; do basename "$f"; done | tr '\n' ' ')"
 if [ "$EXT" = deb ]; then
     pm_tools lintian
     command -v lintian >/dev/null 2>&1; check "S8 lintian is installed" $?
@@ -264,12 +277,12 @@ if [ "$EXT" = deb ]; then
     # its ITP bug. These packages are published as release files, not uploaded
     # to Debian, so the tag describes a process that does not happen.
     lintian --no-tag-display-limit --display-level '>=warning' \
-        --suppress-tags initial-upload-closes-no-bugs "${ALL[@]}" >"$REPORT/lintian.txt" 2>&1
+        --suppress-tags initial-upload-closes-no-bugs "${LINT[@]}" >"$REPORT/lintian.txt" 2>&1
     echo "     lintian rc=$? ($(grep -cE '^[EW]: ' "$REPORT/lintian.txt") E/W lines)"
 else
     pm_tools rpmlint
     command -v rpmlint >/dev/null 2>&1; check "S8 rpmlint is installed" $?
-    rpmlint "${ALL[@]}" >"$REPORT/rpmlint.txt" 2>&1
+    rpmlint "${LINT[@]}" >"$REPORT/rpmlint.txt" 2>&1
     echo "     rpmlint rc=$? ($(grep -cE ': [EW]: ' "$REPORT/rpmlint.txt") E/W lines)"
 fi
 

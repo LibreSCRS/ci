@@ -29,15 +29,28 @@ done
 echo "$1 ${*:2}" >>"$STUB_LOG"
 [ -n "${STUB_DEAD:-}" ] && exit 125
 r="${m[/report]}"
-echo liblibrescrs5 >"$r/linted.txt"
-printf '%s' "${STUB_LINTIAN:-}" >"$r/lintian.txt"
+# like the container: lint every package, or only those lint-files.txt names
+if [ -f "$r/lint-files.txt" ]; then sed 's/_.*//' "$r/lint-files.txt" >"$r/linted.txt"
+else printf 'liblibrescrs5\nlibrescrs-agent\n' >"$r/linted.txt"; fi
+: >"$r/lintian.txt"
+while IFS= read -r l; do
+  [ -n "$l" ] || continue
+  p="${l#?: }"; p="${p%%:*}"
+  grep -qx "$p" "$r/linted.txt" && printf '%s\n' "$l" >>"$r/lintian.txt"
+done <<<"${STUB_LINTIAN:-}"
 echo "PASS stub"
 exit "${STUB_RC:-0}"
 EOF
 chmod +x "$work/bin/docker"
 export PATH="$work/bin:$PATH" PKG_DOCKER=docker STUB_LOG="$work/docker.log"
-mkdir -p "$work/p" "$work/acc"; printf 'x\n' >"$work/p/liblibrescrs5_5.0.0-1_amd64.debian13.deb"
-v() { env "$@" "$tool" --slug debian13 --packages "$work/p" --accepted "$work/acc" >"$work/log" 2>&1; }
+mkdir -p "$work/p/LibreMiddleware" "$work/p/LibreLinux" "$work/acc"
+printf 'x\n' >"$work/p/LibreMiddleware/liblibrescrs5_5.0.0-1_amd64.deb"
+printf 'x\n' >"$work/p/LibreLinux/librescrs-agent_5.0.0-1_amd64.deb"
+v() {  # v [ENV=VAL...] [tool args...]
+    local e=()
+    while [ $# -gt 0 ] && [[ "$1" == *=* ]]; do e+=("$1"); shift; done
+    env "${e[@]}" "$tool" --slug debian13 --packages "$work/p" --accepted "$work/acc" "$@" >"$work/log" 2>&1
+}
 
 v; rc=$?
 grep -q 'debian:13@sha256:[0-9a-f]\{64\} bash /ci-scripts/pkg-verify-inside.sh' "$work/docker.log"; expect "green stack in a clean container of the slug's image" "0 0" "$rc $?"
@@ -49,6 +62,15 @@ v STUB_LINTIAN='W: liblibrescrs5: embedded-library usr/lib/x/libLibreSCRS_Core.s
 '; expect "an accepted bundling finding is green" 0 $?
 v; expect "an accepted row with nothing left to accept is red" 1 $?
 rm -f "$work/acc/liblibrescrs5.txt"
+UP='W: liblibrescrs5: package-name-doesnt-match-sonames libLibreSCRS-Core5
+'
+v STUB_LINTIAN="$UP"; expect "an upstream finding is judged when every package is linted" 1 $?
+v STUB_LINTIAN="$UP" --lint "$work/p/LibreLinux"; rc=$?
+expect "with the consumer's scope the upstream finding is not judged" 0 "$rc"
+v STUB_LINTIAN='W: librescrs-agent: depends-on-obsolete-package policykit-1
+' --lint "$work/p/LibreLinux"; expect "the consumer's own finding is still judged in its scope" 1 $?
+mkdir -p "$work/p/LibreEmpty"
+v --lint "$work/p/LibreEmpty"; expect "a scope with no package cannot be judged" 2 $?
 v STUB_DEAD=1; expect "a container that never ran cannot be judged" 2 $?
 mkdir -p "$work/empty"
 "$tool" --slug debian13 --packages "$work/empty" >"$work/log" 2>&1; expect "no package cannot be judged" 2 $?
