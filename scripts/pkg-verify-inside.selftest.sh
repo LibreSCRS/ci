@@ -97,7 +97,15 @@ done
 EOF
 printf '#!/usr/bin/env bash\ngrep -q "^ELF" "${!#}" && echo "ELF 64-bit LSB shared object" || echo "ASCII text"\n' >"$B/file"
 printf '#!/usr/bin/env bash\ngrep -q MISSING "$1" && echo "\tlibgone.so.1 => not found"; exit 0\n' >"$B/ldd"
-printf '#!/usr/bin/env bash\necho "Available slots:"; exit "${STUB_P11TOOL_RC:-0}"\n' >"$B/pkcs11-tool"
+cat >"$B/pkcs11-tool" <<'XEOF'
+#!/usr/bin/env bash
+case "${STUB_P11TOOL:-slots}" in
+  slots) echo "Available slots:"; echo "Slot 0 (0x0): reader"; exit 0 ;;
+  none)  echo "Available slots:"; echo "No slots."; exit 1 ;;
+  error) echo "error: PKCS11 function C_Initialize failed: rv = CKR_GENERAL_ERROR (0x5)"; exit 1 ;;
+  load)  echo "Available slots:"; echo "error: cannot load module"; exit 1 ;;
+esac
+XEOF
 printf '#!/usr/bin/env bash\ngrep -q BAD "${!#}" && { echo "$(basename "${!#}"): Command /usr/libexec/librescrs-agent is not executable"; exit 1; }; exit 0\n' >"$B/systemd-analyze"
 for t in lintian rpmlint; do printf '#!/bin/sh\nexit 0\n' >"$B/$t"; done
 printf '#!/bin/sh\nexit 0\n' >"$B/timeout.real"
@@ -165,8 +173,12 @@ stack deb dbus-off-path; verify apt; rc=$?
 grep -q '^FAIL S6 ' "$work/log"; expect "a D-Bus file off the daemon's path is red" "1 0" "$rc $?"
 stack deb missing-lib; verify apt; rc=$?
 grep -q '^FAIL S2 ' "$work/log"; expect "an unresolved shared library is red" "1 0" "$rc $?"
-stack deb; verify apt STUB_P11TOOL_RC=1; rc=$?
-grep -q '^FAIL S4 ' "$work/log"; expect "pkcs11-tool failing with no card is red" "1 0" "$rc $?"
+stack deb; verify apt STUB_P11TOOL=none; rc=$?
+grep -q '^PASS S4 ' "$work/log"; expect "an empty slot list (exit 1, No slots.) is the no-card answer" "0 0" "$rc $?"
+stack deb; verify apt STUB_P11TOOL=error; rc=$?
+grep -q '^FAIL S4 ' "$work/log"; expect "a C_Initialize failure is red" "1 0" "$rc $?"
+stack deb; verify apt STUB_P11TOOL=load; rc=$?
+grep -q '^FAIL S4 ' "$work/log"; expect "a module that does not load is red" "1 0" "$rc $?"
 stack deb bad-unit; verify apt; rc=$?
 grep -q '^FAIL S5 ' "$work/log"; expect "a unit the verifier rejects is red" "1 0" "$rc $?"
 stack deb; rm -rf "$work/pkgs"/0/*; verify apt; expect "no package at all is red" 1 $?

@@ -140,7 +140,16 @@ if [ -n "$want" ]; then
         [ -n "$mp" ] && [ -e "$mp" ] || mp="$(find "$R"/usr/lib* -path "*pkcs11/$( [ "$variant" = agent ] && echo librescrs-pkcs11-agent || echo librescrs-pkcs11).so" | head -n 1)"
         timeout 60 pkcs11-tool --module "$mp" --list-slots >"$REPORT/list-slots.txt" 2>&1
         rc=$?
-        check "S4 pkcs11-tool --list-slots over $mp with no card (rc=$rc)" "$rc"
+        # pkcs11-tool exits 1 when the slot list is empty, which is exactly
+        # the no-card, no-reader state here. What must hold is that the module
+        # loaded and C_GetSlotList answered: the listing header is printed, and
+        # no PKCS#11 error or load failure is.
+        ok=1
+        if grep -q '^Available slots:' "$REPORT/list-slots.txt" \
+           && ! grep -qiE 'CKR_|error|failed|cannot|not found' "$REPORT/list-slots.txt"; then
+            case "$rc" in 0) ok=0 ;; 1) grep -q '^No slots\.' "$REPORT/list-slots.txt" && ok=0 ;; esac
+        fi
+        check "S4 pkcs11-tool --list-slots over $mp answers with no card (rc=$rc)" "$ok"
         sed 's/^/     /' "$REPORT/list-slots.txt" | head -n 10
         # S9: the distribution's OpenSC registers its own module beside ours.
         info "S9 providers with the distribution OpenSC installed: $(p11-kit list-modules | grep -c '^module: ') ($(p11-kit list-modules | sed -n 's/^module: //p' | tr '\n' ' '))"
@@ -250,7 +259,12 @@ for n in "${!FILE[@]}"; do echo "$n" >>"$REPORT/linted.txt"; done
 if [ "$EXT" = deb ]; then
     pm_tools lintian
     command -v lintian >/dev/null 2>&1; check "S8 lintian is installed" $?
-    lintian --no-tag-display-limit --display-level '>=warning' "${ALL[@]}" >"$REPORT/lintian.txt" 2>&1
+    # One tag is suppressed here rather than accepted per package:
+    # initial-upload-closes-no-bugs asks a first Debian ARCHIVE upload to close
+    # its ITP bug. These packages are published as release files, not uploaded
+    # to Debian, so the tag describes a process that does not happen.
+    lintian --no-tag-display-limit --display-level '>=warning' \
+        --suppress-tags initial-upload-closes-no-bugs "${ALL[@]}" >"$REPORT/lintian.txt" 2>&1
     echo "     lintian rc=$? ($(grep -cE '^[EW]: ' "$REPORT/lintian.txt") E/W lines)"
 else
     pm_tools rpmlint
