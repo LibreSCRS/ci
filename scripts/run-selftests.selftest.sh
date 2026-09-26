@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
 #
-# run-consumer-selftests.selftest.sh -- the consumer runner judges the
+# run-selftests.selftest.sh -- the consumer runner judges the
 # checkout it is pointed at, and holds every self-test there to the same
 # contract as this repository's own runner: exit 0 AND a last stdout line
 # `selftest: <n> cases, <r> red-proved` with n > 0 and r > 0.
@@ -14,7 +14,7 @@ set -uo pipefail
 unset REPO_ROOT GITHUB_WORKSPACE
 
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-R="$here/run-consumer-selftests.sh"
+R="$here/run-selftests.sh"
 T="$(mktemp -d "${TMPDIR:-/var/tmp}/rcs-selftest.XXXXXX")" || exit 2
 trap 'rm -rf "$T"' EXIT
 out="$T/out"
@@ -85,10 +85,15 @@ mkdir -p "$T/plain"
 expect "11 a root that is not a checkout" 2 \
     "$( (cd "$T" && GIT_CEILING_DIRECTORIES="$T" bash "$R" --root "$T/plain") >"$out" 2>&1; echo $?)" \
     "is not a git checkout"
-expect "12 no root at all" 2 "$(run)" "no consumer checkout"
+# With no --root and no REPO_ROOT the runner judges the checkout it lives in.
+# A copy of it outside any checkout has nothing to judge: "cannot", not green.
+mkdir -p "$T/loose"; cp "$R" "$T/loose/run-selftests.sh"
+expect "12 no root, and the runner itself is not in a checkout" 2 \
+    "$( (cd "$T" && GIT_CEILING_DIRECTORIES="$T" bash "$T/loose/run-selftests.sh") >"$out" 2>&1; echo $?)" \
+    "is not a git checkout"
 expect "13 an unknown argument" 2 "$(run --root "$d" --bogus)" "usage"
 
-[ "$fails" = 0 ] && echo "run-consumer-selftests selftest: all cases behave" \
-    || echo "run-consumer-selftests selftest: FAILED"
+[ "$fails" = 0 ] && echo "run-selftests selftest: all cases behave" \
+    || echo "run-selftests selftest: FAILED"
 printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"
 exit "$fails"

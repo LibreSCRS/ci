@@ -339,8 +339,8 @@ def rule_wired(ctx):
     if runner is not None:
         cmd, label = ["./" + runner, "--list"], runner
     elif any(g == "selftests" for g, _ in entries):
-        cmd = ["bash", str(HERE / "run-consumer-selftests.sh"), "--root", ctx["root"], "--list"]
-        label = "LibreSCRS/ci run-consumer-selftests.sh (profile gate 'selftests')"
+        cmd = ["bash", str(HERE / "run-selftests.sh"), "--root", ctx["root"], "--list"]
+        label = "LibreSCRS/ci run-selftests.sh (profile gate 'selftests')"
     elif shipped_selftests:
         print("FATAL: no executable run-selftests.sh under ci/scripts/ or tools/, and no\n"
               "       'selftests' gate in this repository's profile -- a repository that\n"

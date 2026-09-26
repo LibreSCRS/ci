@@ -796,7 +796,7 @@ printf '#!/bin/sh\nprintf "selftest: 1 cases, 1 red-proved\\n"\n' > "$d/ci/scrip
 commit "$d"
 printf 'selftests\ntest-manifest-gate build\n' > "$d.profiles/Consumer.txt"
 expect "D9 the profile's selftests gate is the runner" 0 "$(cw "$d" wired)" \
-    "(1 self-tests, run by LibreSCRS/ci run-consumer-selftests.sh"
+    "(1 self-tests, run by LibreSCRS/ci run-selftests.sh"
 printf 'check-format-scope\ntest-manifest-gate build\n' > "$d.profiles/Consumer.txt"
 expect "D10 shipped self-tests and neither runner nor selftests gate cannot be judged" 2 \
     "$(cw "$d" wired)" "'selftests' gate in this repository's profile"

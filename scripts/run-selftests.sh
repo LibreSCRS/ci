@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# run-selftests.sh -- run every self-test this repository ships, and make each
-# one say what it measured.
+# run-selftests.sh -- run every self-test a repository ships, and make each one
+# say what it measured. One runner for this repository and for every consumer:
+# with --root (or REPO_ROOT) it judges that checkout -- the consumer's own,
+# repository-specific self-tests -- and without either it judges the checkout
+# this script lives in. A consumer's root is never taken from this script's
+# location, which is a checkout of LibreSCRS/ci.
 #
 # Property, not proxy: a self-test nothing executes proves the same as no
 # self-test at all, and a runner that only reads exit codes accepts `exit 0` as
@@ -24,28 +28,46 @@
 # rather than a mis-run one. An extension with no interpreter is exit 2.
 #
 # Usage:
-#   ./scripts/run-selftests.sh           run them all
-#   ./scripts/run-selftests.sh --list    print what it would run, one per line
+#   run-selftests.sh [--root <checkout>]           run them all
+#   run-selftests.sh [--root <checkout>] --list    print the set
 #
 # Exit codes -- a consumer writes the condition as `rc = 0`, never "not 1":
 #
 #   0  every self-test passed and proved a red case
 #   1  one of them failed, or ran no case, or proved no red case
-#   2  cannot measure: no self-tests found, an interpreter is missing, an
-#      unknown extension, or a self-test itself said it could not judge
+#   2  cannot measure: no root, no self-tests found, an interpreter is
+#      missing, an unknown extension, or a self-test itself said it could not
+#      judge
 set -uo pipefail
 
-here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)" \
-    || { echo "FATAL: cannot resolve own directory -- cannot measure" >&2; exit 2; }
-repo="$(git -C "$here" rev-parse --show-toplevel 2>/dev/null || true)"
-[ -n "$repo" ] || { echo "FATAL: $here is not a git checkout -- cannot measure" >&2; exit 2; }
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+    echo "FATAL: bash ${BASH_VERSION:-?} is older than 4 -- cannot measure" >&2
+    exit 2
+fi
+
+root=""
+list=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --root) [ "$#" -ge 2 ] || { echo "FATAL: --root needs a directory" >&2; exit 2; }
+                root="$2"; shift 2 ;;
+        --list) list=1; shift ;;
+        *) echo "FATAL: usage: $(basename -- "$0") [--root <checkout>] [--list]" >&2; exit 2 ;;
+    esac
+done
+root="${root:-${REPO_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}}"
+repo="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$repo" ] || { echo "FATAL: $root is not a git checkout -- cannot measure" >&2; exit 2; }
 cd "$repo" || { echo "FATAL: cannot enter $repo" >&2; exit 2; }
 
-# Every self-test of the shared gates lives under `scripts/` or `actions/`;
-# the consuming repositories no longer carry copies, so this is the one place
-# they run.
+# One pathspec for every repository: `packaging/`, `scripts/`, `Scripts/`,
+# `e2e/` and `actions/` are here because self-tests live in all of them
+# somewhere in this project, and a pathspec that differed per repository is how
+# four of them once stopped being counted.
+# check-workflows asks this script (--list) what it would run and compares that
+# against what the repository ships.
 mapfile -t tests < <(git ls-files -- \
-    'scripts/*' 'actions/*' \
+    'ci/*' 'tools/*' 'packaging/*' 'scripts/*' 'Scripts/*' 'e2e/*' 'actions/*' \
     | grep '\.selftest\.' | sort)
 
 if [ "${#tests[@]}" -eq 0 ]; then
@@ -53,13 +75,9 @@ if [ "${#tests[@]}" -eq 0 ]; then
     exit 2
 fi
 
-if [ "$#" -gt 0 ]; then
-    if [ "$1" = "--list" ] && [ "$#" -eq 1 ]; then
-        printf '%s\n' "${tests[@]}"
-        exit 0
-    fi
-    echo "FATAL: usage: $(basename -- "$0") [--list]" >&2
-    exit 2
+if [ "$list" = 1 ]; then
+    printf '%s\n' "${tests[@]}"
+    exit 0
 fi
 
 # Interpreters first, all of them, before running anything: a tool this host

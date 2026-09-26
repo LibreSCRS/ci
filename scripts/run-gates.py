@@ -23,7 +23,7 @@ PROFILE FORMAT
   Gate and phase are [a-z0-9][a-z0-9-]*. A gate listed twice in one phase is
   an error. The gates and what each one needs are GATES below; the one
   `selftests` runs the consumer's own self-tests (the repository-specific ones
-  that did not move here) through run-consumer-selftests.sh.
+  that did not move here) through run-selftests.sh.
 
 Usage:
   run-gates.py [--phase P] [--root DIR] [--repo NAME] [--build-dir D]
@@ -73,7 +73,7 @@ GATES = {
                         lambda c: ["--repo-name", c["repo"], "--profiles", c["profiles"]], ()),
     "canonical-types": ("python", "canonical-types.py", lambda c: ["--repo", c["repo"]], ()),
     "dup-scan": ("python", "dup-scan.py", lambda c: ["--repo", c["repo"]], ()),
-    "selftests": ("bash4", "run-consumer-selftests.sh", lambda c: ["--root", c["root"]], ()),
+    "selftests": ("bash4", "run-selftests.sh", lambda c: ["--root", c["root"]], ()),
     "test-manifest-gate": ("bash", "test-manifest-gate.sh",
                            lambda c: ["--check", c["build_dir"], c["leg"]],
                            ("build_dir", "leg")),
