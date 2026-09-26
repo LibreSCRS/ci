@@ -88,7 +88,7 @@ RULES = ("wired", "timeouts", "order", "pins")
 
 GATES_ACTION_RE = re.compile(r"^LibreSCRS/ci/actions/gates@(\S+)$", re.I)
 CHECKOUT_DEPS_RE = re.compile(r"^LibreSCRS/ci/actions/checkout-deps@(\S+)$", re.I)
-DEPS_NAMES = ("LibreMiddleware", "LibreAgent")
+DEPS_NAMES = ("LibreMiddleware", "LibreAgent", "LibreDarwin")
 CI_USES_LINE_RE = re.compile(
     r"""^\s*(?:-\s+)?uses:\s*['"]?(LibreSCRS/ci(?:/[^@\s'"]*)?)@([^\s'"#]*)""", re.I)
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
