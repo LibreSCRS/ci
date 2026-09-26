@@ -21,6 +21,16 @@
 name: stack-chain
 
 on:
+  # A push runs only the release-download fixture (a minute); the stack
+  # itself is hours per slug and runs weekly and on demand.
+  push:
+    branches: [main, 'ci/**']
+    paths:
+      - 'scripts/pkg-*'
+      - 'actions/pkg-*/**'
+      - 'images.lock'
+      - 'lint-accepted/**'
+      - '.github/workflows/stack-chain.yml'
   workflow_dispatch:
     inputs:
       mode:
@@ -52,6 +62,7 @@ concurrency:
 jobs:
   plan:
     name: Plan the matrix
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
