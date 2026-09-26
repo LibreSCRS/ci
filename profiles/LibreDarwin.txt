@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# LibreDarwin -- the shared gates this repository runs: <gate> [<phase>], phase
+# defaults to static. Each phase is one step calling actions/gates with that
+# phase; check-workflows holds every (gate, phase) here to a step that runs it.
+check-format-scope
+check-skip-reasons
+check-workflows
+selftests
+# build-macos, leg macos
+test-manifest-gate build

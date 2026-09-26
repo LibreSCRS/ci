@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# LibreSCRS.github.io -- the shared gates this repository runs: <gate> [<phase>], phase
+# defaults to static. Each phase is one step calling actions/gates with that
+# phase; check-workflows holds every (gate, phase) here to a step that runs it.
+check-workflows
+selftests
