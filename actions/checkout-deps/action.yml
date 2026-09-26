@@ -1,0 +1,128 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: LibreSCRS checkout-deps
+description: >-
+  Check out the LibreSCRS repositories the calling repository builds from
+  source, each at exactly the commit its deps.lock names, and prove the
+  checkout is that commit before anything builds from it.
+
+# The consumer's workflow carries no revision and no MIDDLEWARE_REF: the lock
+# file is the only place a revision is written, `bump-deps to-head|to-tag`
+# is the only thing that writes it, and the last step here measures the
+# property (HEAD of each checkout == lock, no modified files) rather than
+# trusting that the ref was passed through. For LibreMac it also holds the
+# vendored agent contract to the LibreAgent checked out here.
+#
+# Paths: <path>/<Name> relative to the workspace (default .deps/LibreAgent,
+# .deps/LibreMiddleware). Outputs give the absolute paths.
+#
+# Needs bash 4 or later (on macOS: brew install bash); bash 3 is exit 2.
+
+inputs:
+  root:
+    description: >-
+      Where the consumer is checked out, relative to the workspace (its
+      deps.lock is read from there). `.` for a job that checks it out at the
+      workspace root.
+    required: false
+    default: '.'
+  names:
+    description: >-
+      Which rows of deps.lock to check out, space or comma separated
+      (LibreMiddleware, LibreAgent). Empty (the default) means every row. A
+      name the lock does not carry is exit 1, not a skip.
+    required: false
+    default: ''
+  path:
+    description: Directory, relative to the workspace, the dependencies are checked out under.
+    required: false
+    default: '.deps'
+  fetch-depth:
+    description: Passed to actions/checkout. 1 is enough to build; 0 when a build reads history (git describe).
+    required: false
+    default: '1'
+  submodules:
+    description: Passed to actions/checkout (LibreMiddleware needs `recursive` for its vendored sources).
+    required: false
+    default: 'false'
+  consumer:
+    description: The consumer's repository name, when the basename of `root` is not it.
+    required: false
+    default: ''
+
+outputs:
+  libremiddleware-path:
+    description: Absolute path of the LibreMiddleware checkout (empty when not asked for).
+    value: ${{ steps.paths.outputs.libremiddleware-path }}
+  libremiddleware-sha:
+    description: The LibreMiddleware commit from deps.lock.
+    value: ${{ steps.resolve.outputs.libremiddleware-sha }}
+  libreagent-path:
+    description: Absolute path of the LibreAgent checkout (empty when not asked for).
+    value: ${{ steps.paths.outputs.libreagent-path }}
+  libreagent-sha:
+    description: The LibreAgent commit from deps.lock.
+    value: ${{ steps.resolve.outputs.libreagent-sha }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read deps.lock
+      id: resolve
+      shell: bash
+      env:
+        ROOT: ${{ inputs.root }}
+        NAMES: ${{ inputs.names }}
+        CONSUMER: ${{ inputs.consumer }}
+      run: |
+        set -uo pipefail
+        args=(resolve --root "$GITHUB_WORKSPACE/$ROOT" --names "$NAMES")
+        [ -z "$CONSUMER" ] || args+=(--consumer "$CONSUMER")
+        rc=0
+        out="$("$GITHUB_ACTION_PATH/../../scripts/bump-deps" "${args[@]}")" || rc=$?
+        printf '%s\n' "$out"
+        [ "$rc" = 0 ] || exit "$rc"
+        grep -E '^[a-z]+-(wanted|sha|repository)=' <<<"$out" >>"$GITHUB_OUTPUT"
+
+    - name: Checkout LibreMiddleware at the lock
+      if: steps.resolve.outputs.libremiddleware-wanted == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        repository: ${{ steps.resolve.outputs.libremiddleware-repository }}
+        ref: ${{ steps.resolve.outputs.libremiddleware-sha }}
+        path: ${{ inputs.path }}/LibreMiddleware
+        fetch-depth: ${{ inputs.fetch-depth }}
+        submodules: ${{ inputs.submodules }}
+        persist-credentials: false
+
+    - name: Checkout LibreAgent at the lock
+      if: steps.resolve.outputs.libreagent-wanted == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        repository: ${{ steps.resolve.outputs.libreagent-repository }}
+        ref: ${{ steps.resolve.outputs.libreagent-sha }}
+        path: ${{ inputs.path }}/LibreAgent
+        fetch-depth: ${{ inputs.fetch-depth }}
+        submodules: ${{ inputs.submodules }}
+        persist-credentials: false
+
+    - name: Prove each checkout is the locked commit
+      id: paths
+      shell: bash
+      env:
+        ROOT: ${{ inputs.root }}
+        DEPS_PATH: ${{ inputs.path }}
+        CONSUMER: ${{ inputs.consumer }}
+        WANT_LM: ${{ steps.resolve.outputs.libremiddleware-wanted }}
+        WANT_LA: ${{ steps.resolve.outputs.libreagent-wanted }}
+      run: |
+        set -uo pipefail
+        base="$GITHUB_WORKSPACE/$DEPS_PATH"
+        args=(check --root "$GITHUB_WORKSPACE/$ROOT" --no-remote)
+        [ -z "$CONSUMER" ] || args+=(--consumer "$CONSUMER")
+        lm="" la=""
+        [ "$WANT_LM" != true ] || { lm="$base/LibreMiddleware"; args+=(--checkout "LibreMiddleware=$lm"); }
+        [ "$WANT_LA" != true ] || { la="$base/LibreAgent"; args+=(--checkout "LibreAgent=$la"); }
+        rc=0
+        "$GITHUB_ACTION_PATH/../../scripts/bump-deps" "${args[@]}" || rc=$?
+        [ "$rc" = 0 ] || exit "$rc"
+        { echo "libremiddleware-path=$lm"; echo "libreagent-path=$la"; } >>"$GITHUB_OUTPUT"
