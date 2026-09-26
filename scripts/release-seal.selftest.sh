@@ -263,6 +263,34 @@ check "V2 one asset without provenance" 1 "has no provenance attestation" -- \
     av env STUB_ATTESTED="$work/attested-one" bash "$subject" attest-verify "$d"
 check "V3 no SHA256SUMS to take subjects from" 2 "no $work/s2/SHA256SUMS" -- av bash "$subject" attest-verify "$work/s2"
 
+# --------------------------------------------------------- verify-release --
+# A downloaded release as the train sees it after a tag: sealed by "Fulcio"
+# as that tag's run, attested for that tag.
+d="$work/r1"; assets "$d"
+env STUB_SIGNER="$ID_X_500" GITHUB_REPOSITORY=LibreSCRS/Example GITHUB_REF=refs/tags/5.0.0 \
+    bash "$subject" seal publish "$d" >/dev/null 2>&1
+vr() { env STUB_ATTESTED="$work/attested-r1" "$@"; }
+: > "$work/attested-r1"
+while read -r s _; do
+    printf '%s LibreSCRS/Example LibreSCRS/Example/.github/workflows/release.yml refs/tags/5.0.0\n' "$s" >> "$work/attested-r1"
+done < "$d/SHA256SUMS"
+check "D1 a release sealed and attested for its tag" 0 "3 file(s) verified" -- \
+    vr bash "$subject" verify-release "$d" LibreSCRS/Example refs/tags/5.0.0
+check "D2 the same release judged as another tag's" 1 "does not verify as" -- \
+    vr bash "$subject" verify-release "$d" LibreSCRS/Example refs/tags/5.0.1
+command cp -f "$d/a.tar.gz" "$work/a.keep"; printf 'x' >> "$d/a.tar.gz"
+check "D3 a downloaded asset that is not the checksummed one" 1 "sha256sum -c SHA256SUMS fails" -- \
+    vr bash "$subject" verify-release "$d" LibreSCRS/Example refs/tags/5.0.0
+command cp -f "$work/a.keep" "$d/a.tar.gz"
+check "D4 an asset without provenance" 1 "has no provenance attestation" -- \
+    vr env STUB_ATTESTED=/dev/null bash "$subject" verify-release "$d" LibreSCRS/Example refs/tags/5.0.0
+mkdir -p "$work/r-empty"
+check "D5 a notes-only release has nothing to verify" 0 "publishes no asset" -- \
+    bash "$subject" verify-release "$work/r-empty" LibreSCRS/Example refs/tags/5.0.0
+d="$work/r6"; assets "$d"
+check "D6 assets without SHA256SUMS" 1 "no SHA256SUMS" -- \
+    bash "$subject" verify-release "$d" LibreSCRS/Example refs/tags/5.0.0
+
 if [ "$fails" -eq 0 ]; then
     echo "release-seal selftest: all cases passed"
 else

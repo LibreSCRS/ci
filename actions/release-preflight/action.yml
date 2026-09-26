@@ -115,8 +115,10 @@ runs:
           echo "::error::scripts/bump-deps is not in this checkout of the shared gates -- the pins cannot be judged (rc=2)"
           exit 2
         fi
+        # One consumer checkout on a runner: --root, never the workspace mode
+        # (the runner's workspace holds no sibling repositories).
         if [ -n "$TAG" ]; then
-          "$tool" check --tag "$VERSION"
+          "$tool" check --root "$REPO_ROOT" --tag "$VERSION"
         else
-          "$tool" check
+          "$tool" check --root "$REPO_ROOT"
         fi

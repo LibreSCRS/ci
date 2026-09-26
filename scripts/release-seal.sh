@@ -37,8 +37,14 @@
 #       After actions/attest-build-provenance on a tag: every file named in
 #       <dir>/SHA256SUMS verified through attest_verify with this run's
 #       repository, release.yml and ref.
+#   verify-release <dir> <owner/repo> <full ref>
+#       What a user (and release-train, after each tag) does with a downloaded
+#       release: `sha256sum -c SHA256SUMS`, every file's bundle keyless-verified
+#       against identity_for(<repo>, <ref>), and every file named in
+#       SHA256SUMS attestation-verified through attest_verify. A directory
+#       with no file at all is a notes-only release and passes, saying so.
 #   identity <repo> <ref>
-#       Print identity_for, for release-train and for a reader.
+#       Print identity_for, for a reader.
 #
 # Tools: cosign (v3; the composite action installs it pinned), gh (for the
 # fixtures and attest-verify; GH_TOKEN), sha256sum or shasum.
@@ -60,7 +66,7 @@ SITE_POLICY_PATH="${SITE_POLICY_PATH:-content/security/_index.md}"
 
 cannot() { echo "FATAL: $* -- cannot judge" >&2; exit 2; }
 usage() {
-    echo "FATAL: usage: release-seal.sh seal <publish|rehearse> <dir> | fixture-keyless | fixture-attest | attest-verify <dir> | identity <repo> <ref>" >&2
+    echo "FATAL: usage: release-seal.sh seal <publish|rehearse> <dir> | fixture-keyless | fixture-attest | attest-verify <dir> | verify-release <dir> <repo> <ref> | identity <repo> <ref>" >&2
     exit 2
 }
 need() { command -v "$1" >/dev/null 2>&1 || cannot "$1 is not on PATH"; }
@@ -272,12 +278,46 @@ attest_verify_dir() {
     return "$rc"
 }
 
+# ------------------------------------------------------- verify-release --
+verify_release() {
+    local dir=$1 repo=$2 ref=$3 f n=0 name rc=0 identity
+    [ -d "$dir" ] || cannot "no directory $dir"
+    if [ -z "$(find "$dir" -mindepth 1 -maxdepth 1 -type f -print -quit)" ]; then
+        echo "release-seal: $repo $ref publishes no asset -- nothing to verify"
+        return 0
+    fi
+    need cosign; need gh
+    identity="$(identity_for "$repo" "$ref")"
+    [ -f "$dir/SHA256SUMS" ] || { echo "::error::$repo $ref publishes assets but no SHA256SUMS"; return 1; }
+    ( cd "$dir" && sha256 -c SHA256SUMS >/dev/null ) \
+        || { echo "::error::sha256sum -c SHA256SUMS fails for $repo $ref"; rc=1; }
+    while IFS= read -r -d '' f; do
+        n=$((n + 1))
+        if keyless_verify "$f" "$identity"; then
+            echo "verified  $(basename -- "$f")  ($identity)"
+        else
+            echo "::error::$(basename -- "$f") does not verify as $identity"; rc=1
+        fi
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type f ! -name '*.sigstore.json' -print0)
+    while read -r _ name; do
+        name="${name#\*}"
+        if attest_verify "$dir/$name" "$repo" release.yml "$ref"; then
+            echo "attested  $name"
+        else
+            echo "::error::$name has no provenance attestation from $repo release.yml at $ref"; rc=1
+        fi
+    done < "$dir/SHA256SUMS"
+    [ "$rc" = 0 ] && echo "release-seal: $repo $ref -- $n file(s) verified, checksums and provenance included"
+    return "$rc"
+}
+
 [ "$#" -ge 1 ] || usage
 case "$1" in
     seal)            [ "$#" -eq 3 ] || usage; seal "$2" "$3" ;;
     fixture-keyless) [ "$#" -eq 1 ] || usage; fixture_keyless ;;
     fixture-attest)  [ "$#" -eq 1 ] || usage; fixture_attest ;;
     attest-verify)   [ "$#" -eq 2 ] || usage; attest_verify_dir "$2" ;;
+    verify-release)  [ "$#" -eq 4 ] || usage; verify_release "$2" "$3" "$4" ;;
     identity)        [ "$#" -eq 3 ] || usage; identity_for "$2" "$3"; echo ;;
     *) usage ;;
 esac
