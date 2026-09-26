@@ -5,8 +5,9 @@ description: >
   and every one verified in the same step. On a tag: keyless signatures
   checked against this run's exact identity, and a build provenance
   attestation, verified back. In a rehearsal: an ephemeral key with no
-  transparency log (nothing is uploaded anywhere), plus the keyless and
-  attestation VERIFY paths proved both ways against releases that exist.
+  transparency log (nothing is uploaded anywhere). The keyless and
+  attestation VERIFY paths are proved both ways against releases that exist
+  by LibreSCRS/ci's own CI, not by every consumer's rehearsal.
 
 # Contract. The caller's job downloads its build artefacts into `artifacts`
 # itself (a visible actions/download-artifact step, so the workflow's artefact
@@ -81,18 +82,3 @@ runs:
         ARTIFACTS: ${{ inputs.artifacts }}
         GH_TOKEN: ${{ github.token }}
       run: '"$GITHUB_ACTION_PATH/../../scripts/release-seal.sh" attest-verify "$ARTIFACTS"'
-
-    - name: Keyless verification, proved both ways on published releases
-      if: inputs.mode == 'rehearse'
-      shell: bash
-      env:
-        RELEASE_VERSION: ${{ inputs.version }}
-        GH_TOKEN: ${{ github.token }}
-      run: '"$GITHUB_ACTION_PATH/../../scripts/release-seal.sh" fixture-keyless'
-
-    - name: Attestation verification, proved both ways on a public attested artefact
-      if: inputs.mode == 'rehearse'
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: '"$GITHUB_ACTION_PATH/../../scripts/release-seal.sh" fixture-attest'

@@ -7,6 +7,10 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  # The tag-path fixtures read releases other people publish; a week is how
+  # long a change there may go unseen.
+  schedule:
+    - cron: '41 3 * * 2'
 
 permissions: {}
 
@@ -65,3 +69,44 @@ jobs:
           git ls-files -z | while IFS= read -r -d '' f; do
             head -n1 -- "$f" | grep -q '^#!.*bash' && printf '%s\0' "$f"
           done | xargs -0 -r shellcheck -x
+
+  tag-path-fixtures:
+    # The verifiers a tag runs, proved both ways against releases that exist:
+    # verify-release-tag accepts the published LibreMiddleware 4.2.0 tag and
+    # rejects forgeries; the keyless cosign identity and the attestation check
+    # accept real bundles and reject another repository, ref or workflow. One
+    # run here, on every change to these scripts and weekly, instead of one per
+    # consumer rehearsal.
+    name: Tag-path verifiers on published fixtures
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The release public key, from the repository that publishes it
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: LibreSCRS/LibreMiddleware
+          path: _keys
+          sparse-checkout: KEYS
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+        with:
+          cosign-release: v3.0.6
+      - name: verify-release-tag accepts 4.2.0 and rejects forgeries
+        env:
+          REPO_ROOT: ${{ github.workspace }}/_keys
+        run: ./scripts/verify-release-tag.sh rehearse
+      - name: Keyless verification, both ways, on published releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/release-seal.sh fixture-keyless
+      - name: Attestation verification, both ways, on a public attested artefact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/release-seal.sh fixture-attest

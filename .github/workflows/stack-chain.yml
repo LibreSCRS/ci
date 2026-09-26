@@ -1,15 +1,12 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # stack-chain -- build the whole LibreSCRS package stack for every
-# distribution slug and install it in a clean container.
+# distribution slug and install it in a clean container: the top repositories
+# (LibreLinux, LibreCelik, LibreKDE) at the given refs, everything below them
+# at the commits their deps.lock names. Green here is what a release will
+# build. (Upstream main moving ahead is seen when `bump-deps to-head` lands in
+# a consumer and its CI builds against it -- not by a second weekly stack.)
 #
-#   lock  the top repositories (LibreLinux, LibreCelik, LibreKDE) at the given
-#         refs; everything below them at the commits their deps.lock names.
-#         Green here is what a release will build.
-#   head  the same, with LibreMiddleware and LibreAgent at upstream main
-#         instead of the locks: red here means the next `bump-deps to-head`
-#         will break, and where.
-#
-# Weekly (both modes) and on demand (one mode, refs from the inputs). GitHub
+# Weekly and on demand (refs from the inputs). GitHub
 # stops `schedule` in a repository with no activity for 60 days; release-train
 # preflight reads the date of the last green run of this workflow, so a
 # silenced schedule is seen before a tag and not after.
@@ -33,11 +30,6 @@ on:
       - '.github/workflows/stack-chain.yml'
   workflow_dispatch:
     inputs:
-      mode:
-        description: lock = deps at their locks; head = LibreMiddleware and LibreAgent at main
-        type: choice
-        options: [lock, head]
-        default: lock
       linux-ref:
         description: LibreLinux ref
         default: main
@@ -72,21 +64,15 @@ jobs:
       - id: plan
         env:
           EVENT: ${{ github.event_name }}
-          IN_MODE: ${{ inputs.mode }}
           IN_SLUGS: ${{ inputs.slugs }}
         run: |
           set -euo pipefail
-          if [ "$EVENT" = schedule ]; then
-            modes="lock head"; slugs="debian13 ubuntu2604 fedora43 fedora44 opensusetw"
-          else
-            modes="$IN_MODE"; slugs="$IN_SLUGS"
-          fi
+          slugs="$IN_SLUGS"
+          [ "$EVENT" = schedule ] && slugs="debian13 ubuntu2604 fedora43 fedora44 opensusetw"
           rows=()
-          for m in $modes; do
-            for s in $slugs; do
-              kde=true; [ "$s" = opensusetw ] && kde=false
-              rows+=("{\"slug\":\"$s\",\"mode\":\"$m\",\"kde\":$kde}")
-            done
+          for s in $slugs; do
+            kde=true; [ "$s" = opensusetw ] && kde=false
+            rows+=("{\"slug\":\"$s\",\"kde\":$kde}")
           done
           [ "${#rows[@]}" -gt 0 ] || { echo "::error::empty matrix"; exit 1; }
           matrix="{\"include\":[$(IFS=,; echo "${rows[*]}")]}"
@@ -94,7 +80,7 @@ jobs:
           echo "matrix=$matrix" >>"$GITHUB_OUTPUT"
 
   chain:
-    name: ${{ matrix.slug }} (${{ matrix.mode }})
+    name: ${{ matrix.slug }}
     needs: plan
     runs-on: ubuntu-24.04
     # LibreMiddleware alone was measured at up to 45 minutes per image; the
@@ -105,8 +91,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    env:
-      REFS: ${{ matrix.mode == 'head' && 'LibreMiddleware=main LibreAgent=main' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -142,7 +126,6 @@ jobs:
           upstream: source
           repo: ${{ github.workspace }}/src/LibreLinux
           name: LibreLinux
-          refs: ${{ env.REFS }}
           art: ${{ runner.temp }}/stack
       - name: LibreCelik
         uses: ./actions/pkg-build
@@ -151,7 +134,6 @@ jobs:
           upstream: source
           repo: ${{ github.workspace }}/src/LibreCelik
           name: LibreCelik
-          refs: ${{ env.REFS }}
           art: ${{ runner.temp }}/stack
       - name: LibreKDE
         if: matrix.kde
@@ -161,7 +143,6 @@ jobs:
           upstream: source
           repo: ${{ github.workspace }}/src/LibreKDE
           name: LibreKDE
-          refs: ${{ env.REFS }}
           art: ${{ runner.temp }}/stack
 
       - name: Install and judge the whole stack

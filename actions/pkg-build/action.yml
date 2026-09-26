@@ -35,7 +35,7 @@ inputs:
   refs:
     description: >
       upstream=source only: space-separated NAME=REF overrides of deps.lock
-      (e.g. "LibreMiddleware=main LibreAgent=main" for the head-of-main canary).
+      (e.g. "LibreMiddleware=main" for a manual build against upstream main).
     required: false
     default: ''
   art:

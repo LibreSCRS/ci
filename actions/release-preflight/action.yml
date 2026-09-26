@@ -2,9 +2,10 @@
 name: Release preflight
 description: >
   Everything a release can be refused for, before anything is built or signed:
-  the run's mode against its ref, the tag's signature (or, on a branch, the
-  verifier proved both ways on fixtures), the version agreement, and the
-  cross-repository pins. Outputs the version every later job uses.
+  the run's mode against its ref, the tag's signature (on a tag), the version
+  agreement, and the cross-repository pins. Outputs the version every later
+  job uses. The verifier itself is proved both ways on fixtures by
+  LibreSCRS/ci's own CI, not by every consumer's rehearsal.
 
 # Contract. The caller's job checks its own repository out (actions/checkout,
 # fetch-depth 0 or at least the tag) into `repo-root`, runs on Linux, and gives
@@ -72,13 +73,6 @@ runs:
         # The annotated tag OBJECT, whatever depth the checkout fetched.
         git -C "$REPO_ROOT" fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
         "$GITHUB_ACTION_PATH/../../scripts/verify-release-tag.sh" tag "$TAG"
-
-    - name: The tag verifier accepts a real release tag and rejects forgeries
-      if: inputs.mode == 'rehearse'
-      shell: bash
-      env:
-        REPO_ROOT: ${{ inputs.repo-root }}
-      run: '"$GITHUB_ACTION_PATH/../../scripts/verify-release-tag.sh" rehearse'
 
     - name: Every version surface agrees with the release
       shell: bash

@@ -9,7 +9,7 @@
 #       only what it builds from source; LibreCelik locks LibreAgent, whose own
 #       lock at that commit brings LibreMiddleware), dependencies before the
 #       repositories that need them. --ref replaces a locked commit with the
-#       current commit of REF at the same URL (the stack-chain canary).
+#       current commit of REF at the same URL (a manual build against a branch).
 #   pkg-deps.sh checkout <url> <commit40> <dest>
 #       A clean tree of that commit, submodules included, at DEST.
 #
