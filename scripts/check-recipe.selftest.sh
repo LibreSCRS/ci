@@ -105,7 +105,7 @@ d=$(fixture noref); edit "$d" 's/#tag=\$pkgver?signed//'
 check "own: no ref at all" 1 "names no ref" "$d" "${FLAGS[@]}"
 d=$(fixture srcname); edit "$d" 's/"Pkg-\$pkgver::git/"Pkg::git/'
 check "own: a local name build() does not enter (--srcname)" 1 "not 'Pkg-\$pkgver'" "$d" "${FLAGS[@]}"
-d=$(fixture twice); edit "$d" '/^source=(/a\    "git+https://github.com/LibreSCRS/Pkg.git#tag=$pkgver?signed"'; edit "$d" "s/^sha256sums=('SKIP'/sha256sums=('SKIP' 'SKIP'/"
+d=$(fixture twice); edit "$d" '/^source=(/{p;s/.*/    "git+https:\/\/github.com\/LibreSCRS\/Pkg.git#tag=$pkgver?signed"/;}'; edit "$d" "s/^sha256sums=('SKIP'/sha256sums=('SKIP' 'SKIP'/"
 check "own: the own source twice" 1 "found 2" "$d" "${FLAGS[@]}"
 d=$(fixture vacuum); edit "$d" 's/^source=(/sources=(/'
 check "own: source=() renamed, the vacuum" 1 "vacuum" "$d" "${FLAGS[@]}"
