@@ -138,7 +138,7 @@ expect 0 "check: green after the second wave" -- "$BD" check --workspace "$WS"
 # ------------------------------------------------- the graph's root, unknowns
 expect 0 "LibreMiddleware, the graph's root, depends on nothing" "" -- "$BD" check --root "$WS/LibreMiddleware"
 assert "and says so" -- grep -q 'ok: LibreMiddleware depends on no LibreSCRS repository' "$T/out"
-printf 'LibreAgent %s/LibreAgent %s main\n' "$BUMP_DEPS_URL_BASE" "$(git -C "$WS/LibreAgent" rev-parse HEAD)" >"$WS/LibreMiddleware/deps.lock"
+printf 'LibreAgent %s/LibreAgent %s\n' "$BUMP_DEPS_URL_BASE" "$(git -C "$WS/LibreAgent" rev-parse HEAD)" >"$WS/LibreMiddleware/deps.lock"
 expect 1 "a deps.lock in the graph's root is a finding" 'RED: LibreMiddleware is the root of the dependency graph' -- \
     "$BD" check --root "$WS/LibreMiddleware"
 rm -f "$WS/LibreMiddleware/deps.lock"
@@ -156,9 +156,10 @@ while IFS='|' read -r desc pat expr; do
     expect 1 "format: $desc" "$pat" -- "$BD" check --root "$WS/LibreCelik" --no-remote
     restore LibreCelik
 done <<'CASES'
-3 fields|want 4 fields|s/[[:space:]]main$//
+legacy fourth column|a fourth column \('main'\).*drop column 4|/^LibreAgent/s/$/  main/
+two fields|want 3 fields|/^LibreAgent/s/[[:space:]]\{1,\}[0-9a-f]\{40\}$//
+five fields|want 3 fields|/^LibreAgent/s/$/ main extra/
 short commit|is not 40 lowercase hex|/^LibreAgent/s/\([0-9a-f]\{12\}\)[0-9a-f]\{28\}/\1/
-column 4 not a version|column 4 'latest' is neither|s/[[:space:]]main$/ latest/
 url not the upstream|url '.*LibreAgent.git', want|s#/LibreAgent #/LibreAgent.git #
 second row|second row for LibreAgent|/^LibreAgent/p
 row missing|no row for LibreAgent|/^LibreAgent/d
@@ -173,7 +174,7 @@ row="$(grep '^LibreAgent' "$WS/LibreCelik/deps.lock")"
 printf '%s\n' "${row//LibreAgent/LibreFoo}" >>"$WS/LibreCelik/deps.lock"
 expect 1 "unknown dependency row" "unknown dependency 'LibreFoo'" -- "$BD" check --root "$WS/LibreCelik" --no-remote
 restore LibreCelik
-printf 'LibreMiddleware %s/LibreMiddleware %s main\n' "$BUMP_DEPS_URL_BASE" "$(lock_sha LibreLinux LibreMiddleware)" >>"$WS/LibreCelik/deps.lock"
+printf 'LibreMiddleware %s/LibreMiddleware %s\n' "$BUMP_DEPS_URL_BASE" "$(lock_sha LibreLinux LibreMiddleware)" >>"$WS/LibreCelik/deps.lock"
 expect 1 "a dependency outside the consumer's graph (LibreCelik locking LibreMiddleware)" 'LibreCelik does not depend on LibreMiddleware' -- \
     "$BD" check --root "$WS/LibreCelik" --no-remote
 restore LibreCelik
@@ -255,20 +256,26 @@ expect 2 "build dir that built nothing from source cannot be judged" 'none was f
     "$BD" check --root "$WS/LibreCelik" --no-remote --build-dir "$T/b-none"
 
 # ------------------------------------------------------------------ --tag
+# The train freezes the locks at upstream main, then tags upstream at exactly
+# that commit: `check --tag` holds the commit, and nothing but the commit.
+assert "the lock written by to-head carries three columns" -- \
+    bash -c "! grep -Ev '^[[:space:]]*(#|$)' '$WS/LibreCelik/deps.lock' | awk 'NF != 3 { bad = 1 } END { exit !bad }'"
+expect 1 "--tag before upstream tagged" 'has no tag 5.0.0 upstream' -- "$BD" check --root "$WS/LibreCelik" --tag 5.0.0
 for R in LibreMiddleware LibreAgent; do
     git -C "$WS/$R" pull -q --ff-only origin main
     git -C "$WS/$R" tag -a 5.0.0 -m "$R 5.0.0" && git -C "$WS/$R" push -q origin 5.0.0
 done
-expect 1 "--tag: column 4 still says main" "column 4 is 'main', want '5.0.0'" -- "$BD" check --root "$WS/LibreCelik" --tag 5.0.0
-expect 0 "to-tag 5.0.0 LibreCelik" -- "$BD" to-tag 5.0.0 LibreCelik --workspace "$WS"
-assert "to-tag wrote the peeled tag commit and the version" -- \
-    grep -Eq "^LibreAgent +[^ ]+ +$(git -C "$WS/LibreAgent" rev-parse '5.0.0^{commit}') +5\.0\.0$" "$WS/LibreCelik/deps.lock"
-expect 0 "--tag: lock is the tag" -- "$BD" check --root "$WS/LibreCelik" --tag 5.0.0
+expect 0 "--tag: the lock to-head wrote is the (annotated, peeled) tag" -- "$BD" check --root "$WS/LibreCelik" --tag 5.0.0
+assert "and the lock was not rewritten to get there" -- test -z "$(git -C "$WS/LibreCelik" status --porcelain)"
 expect 1 "--tag: a version upstream never tagged" 'has no tag 5.0.1 upstream' -- "$BD" check --root "$WS/LibreCelik" --tag 5.0.1
 setsha LibreCelik LibreAgent "$old_la"
-expect 1 "--tag: column 4 says 5.0.0 but the commit is not the tag's" 'locked [0-9a-f]+ but 5.0.0 is' -- "$BD" check --root "$WS/LibreCelik" --tag 5.0.0
+expect 1 "--tag: the locked commit is not the tag's" 'locked [0-9a-f]+ but 5.0.0 is' -- "$BD" check --root "$WS/LibreCelik" --tag 5.0.0
 restore LibreCelik
-expect 2 "to-tag refuses a tag a dependency does not have" 'has no tag 9.9.9 upstream' -- "$BD" to-tag 9.9.9 LibreCelik --workspace "$WS"
+perturb LibreCelik '/^LibreAgent/s/$/  5.0.0/'
+expect 1 "--tag: a fourth column naming the very tag is still refused" 'drop column 4' -- "$BD" check --root "$WS/LibreCelik" --tag 5.0.0
+restore LibreCelik
+expect 2 "--tag with --no-remote cannot be judged" '--tag needs the network' -- "$BD" check --root "$WS/LibreCelik" --tag 5.0.0 --no-remote
+expect 2 "to-tag is gone" "unknown command 'to-tag'" -- "$BD" to-tag 5.0.0 LibreCelik --workspace "$WS"
 
 # --------------------------------------------------- vendored contract
 expect 0 "LibreMac contract matches LibreAgent at the lock" -- "$BD" check --root "$WS/LibreMac"

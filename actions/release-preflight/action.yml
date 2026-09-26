@@ -101,7 +101,7 @@ runs:
         fi
         "$GITHUB_ACTION_PATH/../../scripts/check-version.sh" --version "$VERSION" --arms "$arms" --min "$MIN"
 
-    - name: Cross-repository pins agree (and, on a tag, name the upstream tags)
+    - name: Cross-repository pins agree (and, on a tag, are the upstream tags' commits)
       shell: bash
       env:
         REPO_ROOT: ${{ inputs.repo-root }}

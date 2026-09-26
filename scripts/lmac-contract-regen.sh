@@ -11,7 +11,7 @@
 #                         agent writes after `// budget-ms:` in
 #                         include/LibreSCRS/Agent/operations/PromptPolicy.h
 #
-# Both are derived, never edited: `bump-deps to-head|to-tag` calls this in the
+# Both are derived, never edited: `bump-deps to-head` calls this in the
 # same commit that moves LibreMac's LibreAgent row in deps.lock, and
 # `bump-deps check` calls it with --check, so "the vendored copy is the agent's
 # contract at the locked revision" is measured on bytes, not on a recorded

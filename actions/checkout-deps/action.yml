@@ -6,7 +6,7 @@ description: >-
   checkout is that commit before anything builds from it.
 
 # The consumer's workflow carries no revision and no MIDDLEWARE_REF: the lock
-# file is the only place a revision is written, `bump-deps to-head|to-tag`
+# file is the only place a revision is written, `bump-deps to-head`
 # is the only thing that writes it, and the last step here measures the
 # property (HEAD of each checkout == lock, no modified files) rather than
 # trusting that the ref was passed through. For LibreMac it also holds the
