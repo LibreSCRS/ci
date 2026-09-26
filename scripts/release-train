@@ -401,7 +401,7 @@ tag_layer() {
         done_in_ledger verified "$r" && { echo "  $r: $V tagged and verified earlier"; continue; }
         sha="$(ledger_detail freeze "$r")"
         "$BUMP_DEPS" check --root "$ROOT/$r" --tag "$V" >/dev/null 2>&1 \
-            || die "$r: bump-deps check --tag $V is not green -- its locks do not name the upstream tags"
+            || die "$r: bump-deps check --tag $V is not green -- its locks are not the upstream tags' commits"
         if git -C "$ROOT/$r" rev-parse -q --verify "refs/tags/$V" >/dev/null; then
             obj="$(git -C "$ROOT/$r" rev-parse "refs/tags/$V^{commit}")"
             [ "$obj" = "$sha" ] || die "$r: an existing local tag $V points at ${obj:0:12}, not the frozen ${sha:0:12}"

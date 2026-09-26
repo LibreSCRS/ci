@@ -7,12 +7,14 @@
 # builds from source (LibreMac: the agent + prompter it bundles, built from
 # LibreDarwin, and the LibreAgent contract it vendors):
 #
-#   # <name>         <url>                                        <commit40>  <main|version>
-#   LibreMiddleware  https://github.com/LibreSCRS/LibreMiddleware  3307307...  main
+#   # <name>         <url>                                        <commit40>
+#   LibreMiddleware  https://github.com/LibreSCRS/LibreMiddleware  3307307...
 #
-# Column 4 is `main` while developing (the commit was upstream main's HEAD when
-# it was locked) and the release version once locked to a tag. Who locks whom
-# is fixed below (EXPECT); topological order is the order of REPOS.
+# Three columns, nothing else: the commit is the lock. Whether it is a release
+# is a question for upstream (`check --tag V`: is it V^{commit}?), not a
+# fourth column that has to be kept in step with it -- a row with a fourth
+# column is a finding. Who locks whom is fixed below (EXPECT); topological
+# order is the order of REPOS.
 #
 # Commands:
 #   status   [repo...]           consumer, dep, locked, upstream HEAD, commits
@@ -20,8 +22,10 @@
 #                                the submodules (report only -- never moved)
 #   to-head  [repo...]           lock every dep to upstream main HEAD, one
 #                                local commit per consumer, topological order
-#   to-tag V [repo...]           same, lock = upstream tag V^{commit}, col 4 = V
-#   check    [--tag V]           the only check (see check_* below); exit 0/1/2
+#   check    [--tag V]           the only check (see check_* below); with
+#                                --tag, every row must be upstream V^{commit}
+#                                (the train tags upstream first, so the
+#                                commit locked at freeze IS the tag's)
 #   resolve  --root DIR [--names "A B"]
 #                                plumbing for actions/checkout-deps: prints
 #                                <lower>-sha / -repository / -wanted lines
@@ -31,7 +35,7 @@
 #   --root DIR        check/resolve ONE consumer checkout (CI); no workspace
 #   --consumer NAME   the consumer's name when DIR's basename is not it
 #   --no-remote       check: skip what needs the network (reachability,
-#                     diamond through the dep's own lock, --tag)
+#                     diamond through the dep's own lock); not with --tag
 #   --checkout N=P    check: the source tree the build used for dep N
 #   --build-dir DIR   check: read FETCHCONTENT_SOURCE_DIR_<N> / _deps/<n>-src
 #                     from this CMake build tree and hold it to the lock
@@ -71,22 +75,25 @@ TMPROOT="$(mktemp -d "${RUNNER_TEMP:-/var/tmp}/bump-deps.XXXXXX")" \
 trap 'rm -rf "$TMPROOT"' EXIT
 
 # ---------------------------------------------------------------- lock files
-# parse_lock CONSUMER LABEL < file. Fills P_SHA/P_URL/P_VER, P_NAMES, and the
+# parse_lock CONSUMER LABEL < file. Fills P_SHA/P_URL, P_NAMES, and the
 # format problems in P_ERR (the caller decides whether they are findings).
-declare -A P_SHA P_URL P_VER
+declare -A P_SHA P_URL
 P_NAMES=() P_ERR=()
 parse_lock() {
-    local consumer=$1 label=$2 line n=0 name url sha ver extra d
+    local consumer=$1 label=$2 line n=0 name url sha extra d
     local expected=" ${EXPECT[$consumer]:-} "
-    P_SHA=() P_URL=() P_VER=() P_NAMES=() P_ERR=()
+    P_SHA=() P_URL=() P_NAMES=() P_ERR=()
     while IFS= read -r line || [ -n "$line" ]; do
         n=$((n + 1))
         line=${line%$'\r'}
         [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
-        name="" url="" sha="" ver="" extra=""
-        read -r name url sha ver extra <<<"$line"
-        if [ -z "$ver" ] || [ -n "$extra" ]; then
-            P_ERR+=("$label:$n: want 4 fields <name> <url> <commit40> <main|version>: $line"); continue
+        name="" url="" sha="" extra=""
+        read -r name url sha extra <<<"$line"
+        if [ -n "$extra" ] && [[ $extra != *[[:space:]]* ]]; then
+            P_ERR+=("$label:$n: a fourth column ('$extra') -- the lock is <name> <url> <commit40>; drop column 4: $line"); continue
+        fi
+        if [ -z "$sha" ] || [ -n "$extra" ]; then
+            P_ERR+=("$label:$n: want 3 fields <name> <url> <commit40>: $line"); continue
         fi
         if [ -z "${KNOWN[$name]:-}" ]; then
             P_ERR+=("$label:$n: unknown dependency '$name'"); continue
@@ -99,9 +106,7 @@ parse_lock() {
         fi
         [ "$url" = "$URL_BASE/$name" ] || P_ERR+=("$label:$n: $name url '$url', want '$URL_BASE/$name'")
         [[ $sha =~ ^[0-9a-f]{40}$ ]] || P_ERR+=("$label:$n: $name commit '$sha' is not 40 lowercase hex")
-        [[ $ver == main || $ver =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
-            || P_ERR+=("$label:$n: $name column 4 '$ver' is neither 'main' nor a version")
-        P_NAMES+=("$name"); P_SHA[$name]=$sha; P_URL[$name]=$url; P_VER[$name]=$ver
+        P_NAMES+=("$name"); P_SHA[$name]=$sha; P_URL[$name]=$url
     done
     for d in ${EXPECT[$consumer]:-}; do
         [ -n "${P_SHA[$d]+x}" ] || P_ERR+=("$label: no row for $d, which $consumer builds from")
@@ -242,22 +247,22 @@ cmd_status() {
 }
 
 # ------------------------------------------------------------------ bumping
-write_lock() {  # write_lock CONSUMER VERCOL; rows from T_SHA
-    local c=$1 ver=$2 f="$WS/$1/deps.lock" tmp d
+write_lock() {  # write_lock CONSUMER; rows from T_SHA
+    local c=$1 f="$WS/$1/deps.lock" tmp d
     tmp="$TMPROOT/deps.lock.new"
     if [ -f "$f" ]; then
         awk '/^[[:space:]]*(#|$)/ { print; next } { exit }' "$f" >"$tmp"
     else
         cat >"$tmp" <<'EOF'
 # Upstream revisions this repository builds from source. Written by
-# `bump-deps to-head|to-tag` (LibreSCRS/ci) and held by `bump-deps check`:
+# `bump-deps to-head` (LibreSCRS/ci) and held by `bump-deps check`:
 # move a row with the tool, never by hand.
 #
-# <name>  <url>  <commit>  <main|version>
+# <name>  <url>  <commit40>
 EOF
     fi
     for d in ${EXPECT[$c]}; do
-        printf '%-16s %-46s %s  %s\n' "$d" "$URL_BASE/$d" "${T_SHA[$d]}" "$ver" >>"$tmp"
+        printf '%-16s %-46s %s\n' "$d" "$URL_BASE/$d" "${T_SHA[$d]}" >>"$tmp"
     done
     cat -- "$tmp" >"$f"
 }
@@ -279,8 +284,8 @@ head_target() {
     [ "$bad" = 0 ] && REPLY=$l
     return 0
 }
-cmd_bump() {  # cmd_bump head|tag VERSION repo...
-    local mode=$1 ver=$2 c d url h msg changed paths; shift 2
+cmd_to_head() {  # cmd_to_head repo...
+    local c d h msg changed paths
     local -A T_SHA
     select_consumers "$@"
     [ "${#SEL[@]}" -gt 0 ] || die2 "no consumer found in $WS"
@@ -300,16 +305,14 @@ cmd_bump() {  # cmd_bump head|tag VERSION repo...
     done
     for c in "${SEL[@]}"; do
         T_SHA=()
-        if [ -f "$WS/$c/deps.lock" ]; then parse_lock "$c" x <"$WS/$c/deps.lock"; else P_SHA=() P_VER=(); fi
+        if [ -f "$WS/$c/deps.lock" ]; then parse_lock "$c" x <"$WS/$c/deps.lock"; else P_SHA=(); fi
         changed=()
         for d in ${EXPECT[$c]}; do
-            url="$URL_BASE/$d"
-            if [ "$mode" = head ]; then head_target "$d"
-            else remote_tag "$url" "$ver"; [ -n "$REPLY" ] || die2 "$c: $d has no tag $ver upstream"; fi
+            head_target "$d"
             T_SHA[$d]=$REPLY
-            [ "${P_SHA[$d]:-}" = "$REPLY" ] && [ "${P_VER[$d]:-}" = "$ver" ] || changed+=("$d ${REPLY:0:12}")
+            [ "${P_SHA[$d]:-}" = "$REPLY" ] || changed+=("$d ${REPLY:0:12}")
         done
-        write_lock "$c" "$ver"
+        write_lock "$c"
         paths=(deps.lock)
         if [ "$c" = LibreMac ]; then
             objdir LibreAgent "$URL_BASE/LibreAgent" "${T_SHA[LibreAgent]}" || die2 "LibreMac: cannot read LibreAgent ${T_SHA[LibreAgent]}"
@@ -332,7 +335,7 @@ cmd_bump() {  # cmd_bump head|tag VERSION repo...
 }
 
 # ------------------------------------------------------------------- check
-declare -A L_SHA=() L_VER=()   # "consumer|dep" -> value, for the diamond
+declare -A L_SHA=()   # "consumer|dep" -> value, for the diamond
 check_reachable() {  # CONSUMER DEP SHA
     local c=$1 d=$2 sha=$3 url="$URL_BASE/$2" h
     remote_head "$url"; h=$REPLY
@@ -376,10 +379,9 @@ check_inner_diamond() {  # a dep that is itself a consumer must agree with our o
         done
     done
 }
-check_tag() {
+check_tag() {  # every row is upstream TAG^{commit}: the commit is the whole claim
     local c=$1 d tag=$2
     for d in ${EXPECT[$c]}; do
-        [ "${L_VER[$c|$d]}" = "$tag" ] || red "$c: $d column 4 is '${L_VER[$c|$d]}', want '$tag'"
         remote_tag "$URL_BASE/$d" "$tag"
         if [ -z "$REPLY" ]; then red "$c: $d has no tag $tag upstream"
         elif [ "$REPLY" = "${L_SHA[$c|$d]}" ]; then ok "$c: $d ${REPLY:0:12} is $tag"
@@ -446,7 +448,7 @@ check_consumer() {  # CONSUMER ROOT
         return 1
     fi
     ok "$c: deps.lock format"
-    for d in "${P_NAMES[@]}"; do L_SHA[$c|$d]=${P_SHA[$d]}; L_VER[$c|$d]=${P_VER[$d]}; done
+    for d in "${P_NAMES[@]}"; do L_SHA[$c|$d]=${P_SHA[$d]}; done
     if [ "$OPT_NO_REMOTE" = 0 ]; then
         for d in "${P_NAMES[@]}"; do check_reachable "$c" "$d" "${L_SHA[$c|$d]}"; done
         check_inner_diamond "$c"
@@ -527,13 +529,8 @@ cmd_resolve() {
 # -------------------------------------------------------------------- main
 OPT_ROOT="" OPT_CONSUMER="" OPT_TAG="" OPT_NO_REMOTE=0 OPT_NAMES="" WS=""
 OPT_CHECKOUTS=() OPT_BUILD_DIRS=() ARGS=()
-[ "$#" -gt 0 ] || die2 "usage: bump-deps status|to-head|to-tag V|check|resolve [options] (see the header)"
+[ "$#" -gt 0 ] || die2 "usage: bump-deps status|to-head|check|resolve [options] (see the header)"
 CMD=$1; shift
-if [ "$CMD" = to-tag ]; then
-    [ "$#" -gt 0 ] || die2 "to-tag needs a version"
-    OPT_TAG=$1; shift
-    [[ $OPT_TAG =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || die2 "'$OPT_TAG' is not a version"
-fi
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --workspace) WS="${2:-}"; shift 2 ;;
@@ -559,8 +556,7 @@ elif [ "$CMD" != resolve ]; then
 fi
 case "$CMD" in
     status) cmd_status "${ARGS[@]}" ;;
-    to-head) cmd_bump head main "${ARGS[@]}" ;;
-    to-tag) cmd_bump tag "$OPT_TAG" "${ARGS[@]}" ;;
+    to-head) cmd_to_head "${ARGS[@]}" ;;
     check) cmd_check "${ARGS[@]}" ;;
     resolve) cmd_resolve ;;
     *) die2 "unknown command '$CMD'" ;;

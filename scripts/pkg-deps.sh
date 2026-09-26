@@ -4,7 +4,7 @@
 #
 # Usage:
 #   pkg-deps.sh closure [--root DIR] [--ref NAME=REF]...
-#       Print "<name> <url> <commit40> <version|main>" for every upstream the
+#       Print "<name> <url> <commit40>" for every upstream the
 #       consumer at DIR builds against, TRANSITIVELY (a consumer's lock lists
 #       only what it builds from source; LibreCelik locks LibreAgent, whose own
 #       lock at that commit brings LibreMiddleware), dependencies before the
@@ -14,7 +14,8 @@
 #       A clean tree of that commit, submodules included, at DEST.
 #
 # deps.lock (in the consumer root) has one row per upstream:
-#   <name>  <url>  <commit40>  <main|version>
+#   <name>  <url>  <commit40>
+# (a row with a fourth column is the old format, and a finding).
 # No deps.lock means no upstream (the bottom of the stack).
 #
 # Root: --root, else REPO_ROOT, else GITHUB_WORKSPACE, else the git top level
@@ -30,15 +31,15 @@ CACHE="${PKG_DEPS_CACHE:-}"
 
 cmd="${1:-}"; shift || true
 
-# parse_lock FILE LABEL -> "name url sha ver" lines on stdout; exit 1 on form
+# parse_lock FILE LABEL -> "name url sha" lines on stdout; exit 1 on form
 parse_lock() {
     awk -v label="$2" '
         /^[[:space:]]*(#|$)/ { next }
         {
-            if (NF != 4) { printf "pkg-deps: %s:%d: want <name> <url> <commit40> <main|version>\n", label, NR > "/dev/stderr"; bad = 1; next }
+            if (NF == 4) { printf "pkg-deps: %s:%d: %s has a fourth column (%s) -- the lock is <name> <url> <commit40>; drop column 4\n", label, NR, $1, $4 > "/dev/stderr"; bad = 1; next }
+            if (NF != 3) { printf "pkg-deps: %s:%d: want <name> <url> <commit40>\n", label, NR > "/dev/stderr"; bad = 1; next }
             if ($3 !~ /^[0-9a-f]{40}$/) { printf "pkg-deps: %s:%d: %s commit is not 40 hex\n", label, NR, $1 > "/dev/stderr"; bad = 1; next }
-            if ($4 != "main" && $4 !~ /^[0-9]+\.[0-9]+\.[0-9]+/) { printf "pkg-deps: %s:%d: %s column 4 is neither main nor a version\n", label, NR, $1 > "/dev/stderr"; bad = 1; next }
-            print $1, $2, $3, $4
+            print $1, $2, $3
         }
         END { exit bad }
     ' "$1"
@@ -90,27 +91,27 @@ cmd_closure() {
     if [ -z "$CACHE" ]; then CACHE="$(mktemp -d "${TMPDIR:-/var/tmp}/pkg-deps.XXXXXX")" || die 2 "no temp dir"; own=1; fi
     mkdir -p "$CACHE"
 
-    local -A sha=() url=() ver=() state=()
-    local order=() rows name u s v
+    local -A sha=() url=() state=()
+    local order=() rows name u s
     # Depth-first post-order over the locks; state: 1 visiting, 2 done.
     visit() {  # visit NAME
-        local n="$1" r nn uu ss vv
+        local n="$1" r nn uu ss
         [ "${state[$n]:-0}" = 2 ] && return 0
         [ "${state[$n]:-0}" = 1 ] && { echo "pkg-deps: cycle through $n" >&2; return 1; }
         state[$n]=1
         r="$(lock_at "${url[$n]}" "${sha[$n]}")" || { echo "pkg-deps: cannot fetch $n ${sha[$n]} from ${url[$n]}" >&2; return 2; }
         if [ -n "$r" ]; then
             r="$(printf '%s\n' "$r" | parse_lock /dev/stdin "$n@${sha[$n]:0:12}:deps.lock")" || return 1
-            while read -r nn uu ss vv; do
+            while read -r nn uu ss; do
                 [ -n "$nn" ] || continue
-                add "$nn" "$uu" "$ss" "$vv" "$n@${sha[$n]:0:12}" || return $?
+                add "$nn" "$uu" "$ss" "$n@${sha[$n]:0:12}" || return $?
                 visit "$nn" || return $?
             done <<<"$r"
         fi
         state[$n]=2
         order+=("$n")
     }
-    add() {  # add NAME URL SHA VER FROM
+    add() {  # add NAME URL SHA FROM
         local s2="$3"
         if [ -n "${over[$1]+x}" ]; then
             s2="${ovsha[$1]:-}"
@@ -120,23 +121,23 @@ cmd_closure() {
             fi
         fi
         if [ -n "${sha[$1]+x}" ] && [ "${sha[$1]}" != "$s2" ]; then
-            echo "pkg-deps: $1 is locked at ${sha[$1]:0:12} and at ${s2:0:12} (from $5) -- one closure, one commit" >&2
+            echo "pkg-deps: $1 is locked at ${sha[$1]:0:12} and at ${s2:0:12} (from $4) -- one closure, one commit" >&2
             return 1
         fi
-        sha[$1]="$s2"; url[$1]="$2"; ver[$1]="$4"
+        sha[$1]="$s2"; url[$1]="$2"
     }
     local -A ovsha=()
     rows="$(parse_lock "$root/deps.lock" deps.lock)" || { [ "$own" = 1 ] && rm -rf "$CACHE"; return 1; }
     local rc=0
-    while read -r name u s v; do
+    while read -r name u s; do
         [ -n "$name" ] || continue
-        add "$name" "$u" "$s" "$v" deps.lock || { rc=$?; break; }
+        add "$name" "$u" "$s" deps.lock || { rc=$?; break; }
         visit "$name" || { rc=$?; break; }
     done <<<"$rows"
     [ "$own" = 1 ] && rm -rf "$CACHE"
     [ "$rc" = 0 ] || return "$rc"
     for name in "${order[@]}"; do
-        printf '%s %s %s %s\n' "$name" "${url[$name]}" "${sha[$name]}" "${ver[$name]}"
+        printf '%s %s %s\n' "$name" "${url[$name]}" "${sha[$name]}"
     done
 }
 

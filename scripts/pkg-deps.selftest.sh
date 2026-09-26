@@ -34,7 +34,7 @@ consumer() {  # consumer <lock-content> -> $work/c
 run() { PKG_DEPS_CACHE="$work/cache" "$tool" "$@" >"$work/out" 2>"$work/err"; }
 
 M1="$(mkrepo LM)"; M2="$(mkrepo LM)"
-A1="$(mkrepo LA "LM $work/up/LM $M1 main")"
+A1="$(mkrepo LA "LM $work/up/LM $M1")"
 U="$work/up"
 
 # bottom of the stack: no lock, no upstream
@@ -43,45 +43,49 @@ run closure --root "$work/c"; rc=$?; test ! -s "$work/out"; expect "no deps.lock
 
 # direct: LA locks LM
 consumer "# comment
-LM $U/LM $M1 main"
+LM $U/LM $M1"
 run closure --root "$work/c"; rc=$?
-test "$(cat "$work/out")" = "LM $U/LM $M1 main"; expect "one direct upstream" "0 0" "$rc $?"
+test "$(cat "$work/out")" = "LM $U/LM $M1"; expect "one direct upstream (three columns out)" "0 0" "$rc $?"
 
 # transitive: LC locks only LA; LA's own lock at that commit brings LM, first
-consumer "LA $U/LA $A1 main"
+consumer "LA $U/LA $A1"
 run closure --root "$work/c"; rc=$?
 test "$(cut -d' ' -f1 "$work/out" | tr '\n' ' ')" = "LM LA "; order=$?
-grep -q "^LM $U/LM $M1 " "$work/out"; lmsha=$?
+grep -q "^LM $U/LM $M1$" "$work/out"; lmsha=$?
 expect "transitive closure, dependencies first, at the dependency's locked commit" "0 0 0" "$rc $order $lmsha"
 
 # REPO_ROOT is the default root (never the script's own location)
-consumer "LM $U/LM $M1 main"
+consumer "LM $U/LM $M1"
 REPO_ROOT="$work/c" PKG_DEPS_CACHE="$work/cache" "$tool" closure >"$work/out" 2>"$work/err"; rc=$?
 grep -q "^LM " "$work/out"; expect "REPO_ROOT names the consumer" "0 0" "$rc $?"
 
 # diamond: LL locks LM@M2 but LA@A1 locks LM@M1
-consumer "LM $U/LM $M2 main
-LA $U/LA $A1 main"
+consumer "LM $U/LM $M2
+LA $U/LA $A1"
 run closure --root "$work/c"; expect "one upstream at two commits is red" 1 $?
 
 # --ref replaces the lock with the branch head -- and the diamond goes away
 # when both paths resolve to the same head
 run closure --root "$work/c" --ref LM=main; rc=$?
-grep -q "^LM $U/LM $M2 " "$work/out"; expect "--ref LM=main takes upstream main for every path" "0 0" "$rc $?"
+grep -q "^LM $U/LM $M2$" "$work/out"; expect "--ref LM=main takes upstream main for every path" "0 0" "$rc $?"
 
 # malformed rows
-consumer "LM $U/LM $M1"
-run closure --root "$work/c"; expect "three fields is red" 1 $?
-consumer "LM $U/LM ${M1:0:12} main"
+consumer "LM $U/LM $M1 main"
+run closure --root "$work/c"; expect "a fourth column (the old format) is red" 1 $?
+grep -q 'drop column 4' "$work/err"; expect "and the finding says to drop it" 0 $?
+consumer "LM $U/LM"
+run closure --root "$work/c"; expect "two fields is red" 1 $?
+consumer "LM $U/LM ${M1:0:12}"
 run closure --root "$work/c"; expect "short commit is red" 1 $?
-consumer "LM $U/LM $M1 latest"
-run closure --root "$work/c"; expect "column 4 neither main nor version is red" 1 $?
-A2="$(mkrepo LA "LM $U/LM notasha main")"
-consumer "LA $U/LA $A2 main"
+A3="$(mkrepo LA "LM $U/LM $M1 main")"
+consumer "LA $U/LA $A3"
+run closure --root "$work/c"; expect "a fourth column in an upstream's own lock is red" 1 $?
+A2="$(mkrepo LA "LM $U/LM notasha")"
+consumer "LA $U/LA $A2"
 run closure --root "$work/c"; expect "malformed lock inside an upstream is red" 1 $?
 
 # cannot judge
-consumer "LM $U/LM $(printf 'd%.0s' $(seq 40)) main"
+consumer "LM $U/LM $(printf 'd%.0s' $(seq 40))"
 run closure --root "$work/c"; expect "unfetchable commit cannot be judged" 2 $?
 run closure --root "$work/nonexistent"; expect "missing root cannot be judged" 2 $?
 

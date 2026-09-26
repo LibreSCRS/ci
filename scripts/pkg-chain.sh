@@ -98,13 +98,13 @@ cmd_build() {
     mkdir -p "$art" || die 2 "art $art"
     art="$(cd "$art" && pwd)" || die 2 "art $art"
 
-    local rows rc up url sha _v repo
+    local rows rc up url sha repo
     rows="$("$here/pkg-deps.sh" closure --root "$root" "${refs[@]}")"; rc=$?
     [ "$rc" -eq 0 ] || { echo "pkg-chain: the upstream closure of $name cannot be built (rc=$rc)"; return "$rc"; }
     echo "== pkg-chain $name on $slug, upstream=$mode"
     [ -n "$rows" ] && printf '%s\n' "$rows" | sed 's/^/   upstream /' || echo "   no upstream"
 
-    while read -r up url sha _v; do
+    while read -r up url sha; do
         [ -n "$up" ] || continue
         if [ "$mode" = release ]; then
             repo="$(printf '%s\n' "$url" | sed -nE 's#^https://github\.com/([^/]+/[^/.]+)(\.git)?/?$#\1#p')"
