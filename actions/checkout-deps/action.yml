@@ -13,7 +13,8 @@ description: >-
 # vendored agent contract to the LibreAgent checked out here.
 #
 # Paths: <path>/<Name> relative to the workspace (default .deps/LibreAgent,
-# .deps/LibreMiddleware). Outputs give the absolute paths.
+# .deps/LibreMiddleware, .deps/LibreDarwin -- the last only LibreMac locks,
+# for the agent and prompter its DMG bundles). Outputs give the absolute paths.
 #
 # Needs bash 4 or later (on macOS: brew install bash); bash 3 is exit 2.
 
@@ -28,7 +29,7 @@ inputs:
   names:
     description: >-
       Which rows of deps.lock to check out, space or comma separated
-      (LibreMiddleware, LibreAgent). Empty (the default) means every row. A
+      (LibreMiddleware, LibreAgent, LibreDarwin). Empty (the default) means every row. A
       name the lock does not carry is exit 1, not a skip.
     required: false
     default: ''
@@ -62,6 +63,12 @@ outputs:
   libreagent-sha:
     description: The LibreAgent commit from deps.lock.
     value: ${{ steps.resolve.outputs.libreagent-sha }}
+  libredarwin-path:
+    description: Absolute path of the LibreDarwin checkout (empty when not asked for).
+    value: ${{ steps.paths.outputs.libredarwin-path }}
+  libredarwin-sha:
+    description: The LibreDarwin commit from deps.lock.
+    value: ${{ steps.resolve.outputs.libredarwin-sha }}
 
 runs:
   using: composite
@@ -105,6 +112,17 @@ runs:
         submodules: ${{ inputs.submodules }}
         persist-credentials: false
 
+    - name: Checkout LibreDarwin at the lock
+      if: steps.resolve.outputs.libredarwin-wanted == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        repository: ${{ steps.resolve.outputs.libredarwin-repository }}
+        ref: ${{ steps.resolve.outputs.libredarwin-sha }}
+        path: ${{ inputs.path }}/LibreDarwin
+        fetch-depth: ${{ inputs.fetch-depth }}
+        submodules: ${{ inputs.submodules }}
+        persist-credentials: false
+
     - name: Prove each checkout is the locked commit
       id: paths
       shell: bash
@@ -114,15 +132,17 @@ runs:
         CONSUMER: ${{ inputs.consumer }}
         WANT_LM: ${{ steps.resolve.outputs.libremiddleware-wanted }}
         WANT_LA: ${{ steps.resolve.outputs.libreagent-wanted }}
+        WANT_LD: ${{ steps.resolve.outputs.libredarwin-wanted }}
       run: |
         set -uo pipefail
         base="$GITHUB_WORKSPACE/$DEPS_PATH"
         args=(check --root "$GITHUB_WORKSPACE/$ROOT" --no-remote)
         [ -z "$CONSUMER" ] || args+=(--consumer "$CONSUMER")
-        lm="" la=""
+        lm="" la="" ld=""
         [ "$WANT_LM" != true ] || { lm="$base/LibreMiddleware"; args+=(--checkout "LibreMiddleware=$lm"); }
         [ "$WANT_LA" != true ] || { la="$base/LibreAgent"; args+=(--checkout "LibreAgent=$la"); }
+        [ "$WANT_LD" != true ] || { ld="$base/LibreDarwin"; args+=(--checkout "LibreDarwin=$ld"); }
         rc=0
         "$GITHUB_ACTION_PATH/../../scripts/bump-deps" "${args[@]}" || rc=$?
         [ "$rc" = 0 ] || exit "$rc"
-        { echo "libremiddleware-path=$lm"; echo "libreagent-path=$la"; } >>"$GITHUB_OUTPUT"
+        { echo "libremiddleware-path=$lm"; echo "libreagent-path=$la"; echo "libredarwin-path=$ld"; } >>"$GITHUB_OUTPUT"

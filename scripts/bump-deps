@@ -4,7 +4,8 @@
 # LibreSCRS repositories build each other at.
 #
 # Every consumer carries a `deps.lock` in its root, one row per upstream it
-# builds from source:
+# builds from source (LibreMac: the agent + prompter it bundles, built from
+# LibreDarwin, and the LibreAgent contract it vendors):
 #
 #   # <name>         <url>                                        <commit40>  <main|version>
 #   LibreMiddleware  https://github.com/LibreSCRS/LibreMiddleware  3307307...  main
@@ -46,7 +47,7 @@ declare -A EXPECT=(
     [LibreDarwin]="LibreMiddleware LibreAgent"
     [LibreCelik]="LibreAgent"
     [LibreKDE]="LibreAgent"
-    [LibreMac]="LibreAgent"
+    [LibreMac]="LibreAgent LibreDarwin"
 )
 declare -A KNOWN=()
 for r in "${REPOS[@]}"; do KNOWN[$r]=1; done
@@ -183,7 +184,7 @@ legacy_rows() {  # before deps.lock: what the repository pins today, if anything
             [ -f "$dir/$f" ] && { REPLY="$(tr -d '[:space:]' <"$dir/$f")"; LEGACY_SRC=$f; return; }
         done
     fi
-    LEGACY_SRC="(none: floats on main)"
+    LEGACY_SRC="(none)"
 }
 product_paths() {  # top-level entries a gap touches, minus CI/test/docs
     git -C "$1" diff --name-only "$2" "$3" 2>/dev/null | cut -d/ -f1 | sort -u \
