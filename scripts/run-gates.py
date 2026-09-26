@@ -82,6 +82,11 @@ GATES = {
     # The release workflow still stages and checks what ci/release-assets.txt
     # promises -- judged on every push, not first on the tag.
     "release-assets-wired": ("bash4", "check-release-assets.sh", lambda c: ["--wired"], ()),
+    # The release workflow's artefacts: every download has its upload, every
+    # upload a download, the source tarball its uploader.
+    "release-artifacts": ("bash4", "check-release-artifacts.sh", lambda c: [], ()),
+    # The source tarball is a function of the commit alone (GNU tar; Linux).
+    "tarball-determinism": ("bash4", "check-tarball-determinism.sh", lambda c: [], ()),
     # deps.lock: format, reachability from upstream main, the diamond. After a
     # configure, the source tree CMake actually used must be the locked one --
     # the property, not the message the configure printed.

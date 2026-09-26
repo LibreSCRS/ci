@@ -440,6 +440,41 @@ YML
 run "$T/order/scratch" "$T/order/scratch/.github/workflows/t.yml"
 judge 0 "a directory a run: step creates counts as provided" $?
 
+# --- case 5b: checkout-deps provides <path>/<Name> for the rows it checks out
+mk_wf t.yml <<'YML'
+on: [push]
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: LibreSCRS/ci/actions/checkout-deps@0123456789012345678901234567890123456789
+        with:
+          path: up
+          names: LibreAgent
+      - name: reads the checked-out dependency
+        working-directory: up/LibreAgent
+        run: echo hi
+YML
+run "$T/order/scratch" "$T/order/scratch/.github/workflows/t.yml"
+judge 0 "a reader after checkout-deps of that row passes" $?
+
+mk_wf t.yml <<'YML'
+on: [push]
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: LibreSCRS/ci/actions/checkout-deps@0123456789012345678901234567890123456789
+        with:
+          path: up
+          names: LibreAgent
+      - name: reads a row it was not asked for
+        working-directory: up/LibreMiddleware
+        run: echo hi
+YML
+run "$T/order/scratch" "$T/order/scratch/.github/workflows/t.yml"
+judge 1 "a row checkout-deps was not asked for is not provided" $? "reads 'up/LibreMiddleware'"
+
 # --- case 6: a local action before the checkout ----------------------------
 mk_wf t.yml <<'YML'
 on: [push]

@@ -87,6 +87,8 @@ HERE = Path(__file__).resolve().parent
 RULES = ("wired", "timeouts", "order", "pins")
 
 GATES_ACTION_RE = re.compile(r"^LibreSCRS/ci/actions/gates@(\S+)$", re.I)
+CHECKOUT_DEPS_RE = re.compile(r"^LibreSCRS/ci/actions/checkout-deps@(\S+)$", re.I)
+DEPS_NAMES = ("LibreMiddleware", "LibreAgent")
 CI_USES_LINE_RE = re.compile(
     r"""^\s*(?:-\s+)?uses:\s*['"]?(LibreSCRS/ci(?:/[^@\s'"]*)?)@([^\s'"#]*)""", re.I)
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -558,6 +560,14 @@ def provided_by(step):
     if re.match(r"^actions/checkout@", uses):
         with_ = step.get("with") or {}
         made.append(str(with_.get("path") or "."))
+    # checkout-deps checks each deps.lock row out at <path>/<Name>; the names
+    # it may create are the rows it was asked for, else every known row.
+    if CHECKOUT_DEPS_RE.match(uses):
+        with_ = step.get("with") or {}
+        base = str(with_.get("path") or ".deps").strip().strip("'\"")
+        asked = re.split(r"[\s,]+", str(with_.get("names") or "").strip())
+        for name in [n for n in asked if n] or DEPS_NAMES:
+            made.append(os.path.join(base, name))
     body = step.get("run")
     if isinstance(body, str):
         for pattern in CLONE_DIR_RE:
