@@ -24,9 +24,11 @@ has been switched off one line at a time:
 
   * at most CAP rows per package;
   * every row carries a reason of at least MIN_REASON characters;
-  * a row for any tag outside the embedded-library family also carries the
-    owner's approval as "[owner YYYY-MM-DD]" in its reason -- the family is
-    the one acceptance the bundling policy already decided;
+  * a row for any tag outside the embedded-library family also carries who
+    decided it: "[owner YYYY-MM-DD]" (the owner's decision, e.g. SPEC D18) or
+    "[session YYYY-MM-DD]" (a working-session decision recorded in the plan,
+    pending the owner's review) -- the family is the one acceptance the
+    bundling policy already decided;
   * a row that applies to this run (its tool ran, its slug matches, its
     package was linted) and matches no finding is RED: the defect it excused
     is gone, and the row would silently excuse the next one.
@@ -44,7 +46,7 @@ import sys
 
 CAP = 5
 MIN_REASON = 15
-OWNER = re.compile(r"\[owner \d{4}-\d{2}-\d{2}\]")
+OWNER = re.compile(r"\[(owner|session) \d{4}-\d{2}-\d{2}\]")
 FAMILY = re.compile(r"^embedded-library")
 JUDGED = {"lintian": ("E", "W"), "rpmlint": ("E",)}
 
@@ -93,7 +95,7 @@ def load_rows(accepted, pkg, problems):
             problems.append(f"{where}: reason shorter than {MIN_REASON} characters")
             continue
         if not FAMILY.match(f[2]) and not OWNER.search(reason):
-            problems.append(f"{where}: {f[2]} is outside the embedded-library family and carries no [owner YYYY-MM-DD]")
+            problems.append(f"{where}: {f[2]} is outside the embedded-library family and carries no [owner|session YYYY-MM-DD]")
             continue
         rows.append({"where": where, "tool": f[0], "slug": f[1], "tag": f[2], "ctx": f[3], "used": 0})
     if len(rows) > CAP:

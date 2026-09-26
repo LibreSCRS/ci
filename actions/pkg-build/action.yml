@@ -90,6 +90,24 @@ runs:
         echo "art=$art" >>"$GITHUB_OUTPUT"
         echo "dist=$dist" >>"$GITHUB_OUTPUT"
         rc=0
-        "$GITHUB_ACTION_PATH/../../scripts/pkg-chain.sh" "${args[@]}" || rc=$?
+        "$GITHUB_ACTION_PATH/../../scripts/pkg-chain.sh" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/pkg-build-$IN_SLUG.out" || rc=${PIPESTATUS[0]}
         echo "PKG_BUILD_RC=$rc"
+        if [ "$rc" != 0 ]; then
+          # The evidence goes where a reader already looks -- the job log and
+          # the run summary -- not into an artefact nothing downloads.
+          for f in "$art"/log/*.txt; do
+            [ -f "$f" ] || continue
+            echo "::group::$(basename "$f") (last 300 lines)"; tail -n 300 "$f"; echo "::endgroup::"
+          done
+          {
+            echo "### pkg-build $name on $IN_SLUG failed (rc=$rc)"
+            echo '```'
+            grep -E '^(FAIL|SKIP|REFUSED)|pkg-chain:|pkg-deps:|: RED$' "$RUNNER_TEMP/pkg-build-$IN_SLUG.out" | tail -n 40
+            echo '```'
+            newest="$(ls -t "$art"/log/*.txt 2>/dev/null | head -n 1)"
+            if [ -n "$newest" ]; then
+              echo "Last 60 lines of \`$(basename "$newest")\`:"; echo '```'; tail -n 60 "$newest"; echo '```'
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"
+        fi
         exit "$rc"

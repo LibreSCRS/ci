@@ -178,7 +178,10 @@ grep -q '^PASS S7 direct-to-agent: exactly one registration afterwards (files 1,
 expect "apt agent stack green, both switches measured" "0 0 0" "$rc $s3 $s7"
 grep -q 'liblibrescrs-dev' "$work/state/liblibrescrs-dev" 2>/dev/null; test ! -e "$work/state/liblibrescrs-dev"
 expect "development packages are not part of the user stack" 0 $?
-stack rpm; verify dnf; expect "dnf agent stack green (bare install refuses, --allowerasing switches)" 0 $?
+stack rpm; mkdir -p "$work/repos"; printf '[fedora-cisco-openh264]\nenabled=1\n' >"$work/repos/fedora-cisco-openh264.repo"
+verify dnf PKG_DNF_REPO_DIR="$work/repos"; rc=$?
+grep -qx 'enabled=0' "$work/repos/fedora-cisco-openh264.repo"
+expect "dnf agent stack green (bare install refuses, --allowerasing switches), openh264 repo off" "0 0" "$rc $?"
 stack rpm; verify zypper; expect "zypper agent stack green (bare refuses, --force-resolution switches)" 0 $?
 STACK_DIRECT_ONLY=1 stack deb; verify apt; rc=$?
 grep -q '^PASS S3 exactly one LibreSCRS module, and it is librescrs ' "$work/log"; expect "a stack without the agent is the direct variant" "0 0" "$rc $?"

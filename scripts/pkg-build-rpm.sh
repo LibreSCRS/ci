@@ -100,6 +100,14 @@ spec="${specs[0]}"
 defines=( --define "debug_package %{nil}" --define "_smp_build_ncpus $JOBS" )
 case "$MANAGER" in
 dnf)
+    # Fedora's image enables the Cisco openh264 repository; nothing here needs
+    # it and its mirrors fail often enough to redden a run for no reason. It is
+    # switched off in the repository file (not with --disablerepo, which dnf5
+    # refuses for an id the image no longer has), so every dnf call below --
+    # including the ones inside rpm tooling -- skips it.
+    for r in "${PKG_DNF_REPO_DIR:-/etc/yum.repos.d}"/fedora-cisco-openh264*.repo; do
+        if [ -f "$r" ]; then sed -i "s/^enabled=1/enabled=0/" "$r"; fi
+    done
     pm_install() { dnf -y -q install "$@"; }
     # file: brp-strip finds what to strip with it. With debug packages off,
     # brp-strip (strip -g) is the only step that removes debug information;

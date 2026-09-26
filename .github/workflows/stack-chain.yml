@@ -169,19 +169,8 @@ jobs:
         with:
           slug: ${{ matrix.slug }}
           packages: ${{ runner.temp }}/stack/${{ matrix.slug }}
-          report: ${{ runner.temp }}/report
           lint: all
 
-      - name: Keep the logs
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: stack-chain-${{ matrix.slug }}-${{ matrix.mode }}
-          path: |
-            ${{ runner.temp }}/stack/log
-            ${{ runner.temp }}/report
-          retention-days: 7
-          if-no-files-found: warn
 
   release-path-fixture:
     # The one step a tag build takes that a branch never does is downloading
