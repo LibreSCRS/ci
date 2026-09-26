@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# images.lock -- container images by digest, packaging tools by version + sha256.
+# Format: <slug> <image>@sha256:<digest>   |   tool <name> <version> <url> <sha256>
