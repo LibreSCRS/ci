@@ -98,7 +98,7 @@ grep -q '^SKIP   G3 ' "$work/log"; expect "a failed build is red and G3 does not
 consumer; gate debian13 STUB_VERIFY_RC=1
 expect "a failed installed-state check is red" 1 $?
 M="$(mkupstream)"
-consumer "" "" "LM $work/up/LM $M main"; gate debian13; rc=$?
+consumer "" "" "LM $work/up/LM $M"; gate debian13; rc=$?
 grep -q 'upstream packages for LM missing' "$work/log"; expect "an upstream with no packages yet is red" "1 0" "$rc $?"
 mkdir -p "$work/art/debian13/LM/deb"; printf 'x\n' >"$work/art/debian13/LM/deb/lm_5.0.0-1_amd64.deb"
 gate debian13; expect "the same upstream, built first, is green" 0 $?

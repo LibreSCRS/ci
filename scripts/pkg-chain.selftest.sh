@@ -73,7 +73,7 @@ mkrepo() {  # mkrepo DIR NAME [deps.lock] -> commit
     git -C "$1" init -q -b main && git -C "$1" add -A && git -C "$1" commit -q -m c && git -C "$1" rev-parse HEAD
 }
 M="$(mkrepo "$work/up/LibreMiddleware" lm)"
-mkrepo "$work/c" la "LibreMiddleware $work/up/LibreMiddleware $M main" >/dev/null
+mkrepo "$work/c" la "LibreMiddleware $work/up/LibreMiddleware $M" >/dev/null
 chain() { "$tool" build --slug debian13 --art "$work/art" --root "$work/c" --name LibreAgent --dist "$work/dist" "$@" >"$work/log" 2>&1; }
 
 # source: upstream at its locked commit, first; then the consumer; then assets
@@ -93,7 +93,7 @@ grep -q 'build la' "$STUB_LOG"; expect "source: a failed upstream build stops th
 # repository for that.
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$work/up/LibreMiddleware.insteadOf" \
     GIT_CONFIG_VALUE_0=https://github.com/LibreSCRS/LibreMiddleware
-mkrepo "$work/c" la "LibreMiddleware https://github.com/LibreSCRS/LibreMiddleware $M 5.0.0" >/dev/null
+mkrepo "$work/c" la "LibreMiddleware https://github.com/LibreSCRS/LibreMiddleware $M" >/dev/null
 rm -rf "$work/art" "$work/dist"; : >"$STUB_LOG"
 STUB_ASSETS="lm_5.0.0-1_amd64.debian13.deb lm_5.0.0-1_amd64.ubuntu2604.deb lm-5.0.0-1.fc43.x86_64.fedora43.rpm" \
     chain --upstream release --version 5.0.0; rc=$?
