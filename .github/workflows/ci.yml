@@ -51,6 +51,14 @@ jobs:
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz" | sha256sum -c -
           tar xzf actionlint.tar.gz actionlint
           ./actionlint -color
+      - name: shellcheck 0.11.0 (pinned, so CI and a local run judge alike)
+        run: |
+          curl -fsSL -o sc.tar.xz \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  sc.tar.xz" | sha256sum -c -
+          tar xJf sc.tar.xz --strip-components=1 shellcheck-v0.11.0/shellcheck
+          sudo install -m755 shellcheck /usr/local/bin/shellcheck
+          shellcheck --version
       - name: shellcheck
         # Every tracked file whose first line names bash, whatever its extension.
         run: |

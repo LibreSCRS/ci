@@ -361,7 +361,7 @@ check_inner_diamond() {  # a dep that is itself a consumer must agree with our o
         parse_lock "$d" "$d@${sha:0:12}:deps.lock" <<<"$lock"
         for e in "${P_ERR[@]}"; do red "$e"; done
         for e in ${EXPECT[$d]}; do
-            [ -n "${L_SHA[$c|$e]+x}" ] && [ -n "${P_SHA[$e]+x}" ] || continue
+            if [ -z "${L_SHA[$c|$e]+x}" ] || [ -z "${P_SHA[$e]+x}" ]; then continue; fi
             if [ "${L_SHA[$c|$e]}" = "${P_SHA[$e]}" ]; then
                 ok "$c: $e ${P_SHA[$e]:0:12} is the one $d ${sha:0:12} builds from"
             else
