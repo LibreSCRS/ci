@@ -16,7 +16,7 @@ inputs:
     description: Newline- or space-separated directories holding the stack's .deb/.rpm files.
     required: true
   report:
-    description: Directory that keeps the raw logs (upload it on failure).
+    description: Directory that keeps the raw logs; on failure they are printed to the job log and summarised in the run summary.
     required: false
     default: ''
   lint:
@@ -49,7 +49,6 @@ runs:
         set -uo pipefail
         args=(--slug "$IN_SLUG")
         for d in $IN_PACKAGES; do args+=(--packages "$d"); done
-        [ -z "$IN_REPORT" ] || args+=(--report "$IN_REPORT")
         case "$IN_LINT" in
           all) ;;
           own)
@@ -64,7 +63,22 @@ runs:
             ;;
           *) for d in $IN_LINT; do args+=(--lint "$d"); done ;;
         esac
+        report="${IN_REPORT:-$RUNNER_TEMP/pkg-verify-report-$IN_SLUG}"
+        args+=(--report "$report")
         rc=0
-        "$GITHUB_ACTION_PATH/../../scripts/pkg-verify.sh" "${args[@]}" || rc=$?
+        "$GITHUB_ACTION_PATH/../../scripts/pkg-verify.sh" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/pkg-verify-$IN_SLUG.out" || rc=${PIPESTATUS[0]}
         echo "PKG_VERIFY_RC=$rc"
+        if [ "$rc" != 0 ]; then
+          # Job log and run summary, not an artefact nothing downloads.
+          for f in "$report"/*.txt; do
+            [ -f "$f" ] || continue
+            echo "::group::$(basename "$f") (last 200 lines)"; tail -n 200 "$f"; echo "::endgroup::"
+          done
+          {
+            echo "### pkg-verify on $IN_SLUG failed (rc=$rc)"
+            echo '```'
+            grep -E '^(FAIL|FINDING|ROW)|pkg-lint-accept:|== pkg-verify' "$RUNNER_TEMP/pkg-verify-$IN_SLUG.out" | tail -n 60
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+        fi
         exit "$rc"
