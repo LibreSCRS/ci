@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
+# selftest-platforms: linux  (packages are built and judged in Linux containers)
 # Self-test for pkg-build-deb.sh with the Debian tools replaced by stubs: the
 # build always runs with noautodbgsym, the changelog is generated with the
 # project maintainer, and a debug package -- produced or offered as input --

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
+# selftest-platforms: linux  (packages are built and judged in Linux containers)
 # Self-test for pkg-chain.sh with docker and gh replaced by stubs: source mode
 # builds the upstream at its locked commit first and reuses it, release mode
 # downloads only the slug's assets, and an empty or debug-carrying release, a

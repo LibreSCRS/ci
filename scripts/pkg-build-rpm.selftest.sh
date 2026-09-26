@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
+# selftest-platforms: linux  (packages are built and judged in Linux containers)
 # Self-test for pkg-build-rpm.sh with rpm/rpmbuild/dnf/zypper replaced by
 # stubs: openSUSE gets its package names, a slug dist tag, the ninja builder
 # and no debug packages; a debug package produced or offered as input fails

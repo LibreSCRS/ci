@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
+# selftest-platforms: linux  (packages are built and judged in Linux containers)
 # Self-test for pkg-verify.sh with docker replaced by a stub standing in for
 # the container run: a red smoke check and an unaccepted lint finding each make
 # the verdict red; a run that produced no report, an empty package set and an

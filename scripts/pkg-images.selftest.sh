@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
+# selftest-platforms: linux  (packages are built and judged in Linux containers)
 # Self-test for pkg-images: the real lock is well-formed, and every way a lock
 # can rot (short digest, moving tool URL, duplicate slug, unknown manager, a
 # tool whose bytes changed) is a red, not a pass.

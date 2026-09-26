@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
+# selftest-platforms: linux  (packages are built and judged in Linux containers)
 # Self-test for pkg-changelog-debian.sh: headlines whole and wrapped under 80
 # columns, the project maintainer, only the topmost section, and a headline
 # naming a source path or a process word is red.

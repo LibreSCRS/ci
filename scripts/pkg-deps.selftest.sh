@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
+# selftest-platforms: linux  (packages are built and judged in Linux containers)
 # Self-test for pkg-deps.sh over throw-away local repositories: the closure is
 # transitive and ordered, one upstream at two commits is red, a malformed lock
 # is red, an unfetchable commit cannot be judged, and checkout lands on the

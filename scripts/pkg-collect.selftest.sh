@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
+# selftest-platforms: linux  (packages are built and judged in Linux containers)
 # Self-test for pkg-collect.sh: the slug lands in every asset name, and a debug
 # package, a wrong-family package, a name collision or an empty set is refused
 # with nothing copied.

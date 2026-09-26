@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
+# selftest-platforms: linux  (packages are built and judged in Linux containers)
 # Self-test for pkg-gate.sh with docker replaced by a stub that "builds" by
 # writing package files into the /out mount: a stale maintainer, a failed
 # build, a failed installed-state check, a missing upstream and an undeclared
