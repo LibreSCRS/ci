@@ -27,10 +27,11 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-      - name: Newer bash and PyYAML on macOS (system bash is 3.2)
+      - name: GNU userland the gates assume (macOS ships bash 3.2 and bsdtar)
         if: runner.os == 'macOS'
         run: |
-          brew install bash
+          brew install bash gnu-tar
+          echo "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
           python3 -m pip install --break-system-packages pyyaml
       - name: Run every self-test
         run: ./scripts/run-selftests.sh
