@@ -67,7 +67,11 @@ cat >"$B/apt-get" <<'EOF'
 case "$1" in update) exit 0 ;; esac
 exec stubpm apt "$@"
 EOF
-printf '#!/usr/bin/env bash\n[ "$1" = -n ] && [ "$2" = -q ] && [ "$3" = refresh ] && exit 0\nexec stubpm zypper "$@"\n' >"$B/zypper"
+cat >"$B/zypper" <<'XEOF'
+#!/usr/bin/env bash
+[ "$1" = -n ] && [ "$2" = -q ] && [ "$3" = refresh ] && exit 0
+exec stubpm zypper "$@"
+XEOF
 printf '#!/usr/bin/env bash\nexec stubpm dnf "$@"\n' >"$B/dnf"
 cat >"$B/dpkg-query" <<'EOF'
 #!/usr/bin/env bash
@@ -96,8 +100,15 @@ for m in "$STUB_ROOT"/usr/share/p11-kit/modules/*.module; do
   echo "module: $(basename "$m" .module)"; echo "    path: $(sed -n 's/^module: //p' "$m")"
 done
 EOF
-printf '#!/usr/bin/env bash\ngrep -q "^ELF" "${!#}" && echo "ELF 64-bit LSB shared object" || echo "ASCII text"\n' >"$B/file"
-printf '#!/usr/bin/env bash\ngrep -q MISSING "$1" && echo "\tlibgone.so.1 => not found"; exit 0\n' >"$B/ldd"
+cat >"$B/file" <<'XEOF'
+#!/usr/bin/env bash
+if grep -q "^ELF" "${!#}"; then echo "ELF 64-bit LSB shared object"; else echo "ASCII text"; fi
+XEOF
+cat >"$B/ldd" <<'XEOF'
+#!/usr/bin/env bash
+if grep -q MISSING "$1"; then printf '\tlibgone.so.1 => not found\n'; fi
+exit 0
+XEOF
 cat >"$B/pkcs11-tool" <<'XEOF'
 #!/usr/bin/env bash
 case "${STUB_P11TOOL:-slots}" in

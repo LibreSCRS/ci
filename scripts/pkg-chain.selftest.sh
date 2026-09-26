@@ -97,7 +97,7 @@ mkrepo "$work/c" la "LibreMiddleware https://github.com/LibreSCRS/LibreMiddlewar
 rm -rf "$work/art" "$work/dist"; : >"$STUB_LOG"
 STUB_ASSETS="lm_5.0.0-1_amd64.debian13.deb lm_5.0.0-1_amd64.ubuntu2604.deb lm-5.0.0-1.fc43.x86_64.fedora43.rpm" \
     chain --upstream release --version 5.0.0; rc=$?
-test "$(find "$work/art/debian13/LibreMiddleware/deb" -type f | xargs -n1 basename)" = "lm_5.0.0-1_amd64.debian13.deb"; only=$?
+test "$(find "$work/art/debian13/LibreMiddleware/deb" -type f -printf '%f\n')" = "lm_5.0.0-1_amd64.debian13.deb"; only=$?
 grep -q 'download LibreSCRS/LibreMiddleware 5.0.0 \*\.debian13\.deb' "$STUB_LOG"; asked=$?
 expect "release: exactly the slug's assets of the upstream release" "0 0 0" "$rc $only $asked"
 rm -rf "$work/art"; STUB_ASSETS="lm_5.0.0-1_amd64.ubuntu2604.deb" chain --upstream release --version 5.0.0
