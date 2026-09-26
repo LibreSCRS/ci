@@ -14,13 +14,17 @@
 # Removing a test stays allowed; it just has to be visible in the same change.
 #
 # Usage:
-#   ci/scripts/test-manifest-gate.sh --check  <builddir> <leg>
-#   ci/scripts/test-manifest-gate.sh --update <builddir> <leg>
+#   REPO_ROOT=<consumer checkout> scripts/test-manifest-gate.sh --check  <builddir> <leg>
+#   REPO_ROOT=<consumer checkout> scripts/test-manifest-gate.sh --update <builddir> <leg>
+#
+# The repository judged is REPO_ROOT, else $GITHUB_WORKSPACE, else the git
+# checkout around the current directory -- never the one this script lives in.
+# A relative <builddir> is read from that repository's root.
 #
 # Exit codes:
 #   0  the discovered set matches ci/test-manifest.<leg>.txt
 #   1  it differs; the diff and a +N / -M summary are printed
-#   2  refusing to judge: no manifest, ctest failed, an empty listing, or any
+#   2  refusing to judge: no repository, no manifest, ctest failed, an empty listing, or any
 #      _NOT_BUILT entry. Those describe a build that did not happen, not a set
 #      of tests, and a number this script cannot defend is worse than none.
 set -uo pipefail
@@ -47,7 +51,12 @@ case "$LEG" in
     ""|*/*) echo "FATAL: leg name '$LEG' is not a single path segment" >&2; exit 2 ;;
 esac
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO_ROOT="${REPO_ROOT:-${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel 2>/dev/null)}}"
+if [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT" ]; then
+    echo "FATAL: no repository to judge -- set REPO_ROOT, or run inside a checkout" >&2
+    exit 2
+fi
+cd "$REPO_ROOT" || exit 2
 MANIFEST="${REPO_ROOT}/ci/test-manifest.${LEG}.txt"
 REL_MANIFEST="ci/test-manifest.${LEG}.txt"
 
@@ -117,5 +126,5 @@ added=$(comm -23 "$listing" "$MANIFEST" | wc -l | tr -d "[:space:]")
 removed=$(comm -13 "$listing" "$MANIFEST" | wc -l | tr -d "[:space:]")
 diff -u "$MANIFEST" "$listing" || true
 echo "+$added / -$removed tests against $REL_MANIFEST"
-echo "Regenerate it in the same change: ci/scripts/test-manifest-gate.sh --update $BUILD_DIR $LEG"
+echo "Regenerate it in the same change: test-manifest-gate.sh --update $BUILD_DIR $LEG (from LibreSCRS/ci scripts/)"
 exit 1

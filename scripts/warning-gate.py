@@ -49,9 +49,27 @@ not scored.
 Falling BELOW the baseline never fails the build -- a gate that punishes fixing
 warnings does not survive contact -- it prints `stale baseline, run --update`.
 
+THE FLOOR, AND WHY IT IS JUDGED HERE
+-----------------------------------
+The anti-vacuum rule has one failure mode of its own: when the tree LOSES
+compile units, the recorded floor becomes unreachable and every healthy full
+build is refused with a message that blames the build ("this is an incremental
+build, not a measurement") instead of the stale number. So the floor is held
+against the compile edges the CONFIGURED graph holds (build.ninja): --floor asks
+only that, before anything is built, and --check asks it too whenever the tree
+has a build.ninja -- an unreachable floor is then a failure (1) that names both
+numbers, never a refusal (2) that blames the log. The floor and the counts are
+read from one section, chosen by one function, so they cannot disagree.
+
 Usage:
-  ci/scripts/warning-gate.py --check [--require-key] [--leg <name>] <build.log> --build-dir <dir>
-  ci/scripts/warning-gate.py --update [--leg <name>] <build.log> --build-dir <dir>
+  warning-gate.py --check [--require-key] [--leg <name>] <build.log> --build-dir <dir>
+  warning-gate.py --update [--leg <name>] <build.log> --build-dir <dir>
+  warning-gate.py --floor [--leg <name>] --build-dir <dir>
+
+The repository judged is REPO_ROOT, else $GITHUB_WORKSPACE, else the git
+checkout around the current directory -- never the one this script lives in.
+Its baseline is <root>/ci/warning-baseline.json, and relative paths given on
+the command line are read from <root>.
 
 --leg is for a workflow that builds one compiler in more than one configuration
 (a matrix): each configuration compiles a different set of units, so each gets
@@ -65,22 +83,25 @@ run passes, which is how this check came to judge nothing at all on a runner
 whose compiler the baseline had never seen.
 
 Exit codes:
-  0  at or below the baseline for this compiler in both partitions
+  0  at or below the baseline for this compiler in both partitions (--floor:
+     the recorded floor is reachable)
   1  a category grew, appeared, or a system category has no recorded reason;
-     or --require-key was given and this compiler has no baseline
-  2  refusing to judge: no baseline, no build dir, a log that is not a
-     measurement, or a tagged diagnostic with no location to resolve
+     or --require-key was given and this compiler has no baseline; or the
+     floor is above the configured graph, or is 0 (the rule disarmed)
+  2  refusing to judge: no repository, no baseline, no build dir, a log that is
+     not a measurement, a tagged diagnostic with no location to resolve, or
+     (--floor) no build.ninja, no compile edges, no section for this key
 """
 import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-BASELINE = REPO_ROOT / "ci" / "warning-baseline.json"
+BASELINE_REL = "ci/warning-baseline.json"
 
 TAG = re.compile(r"\[-W([A-Za-z0-9=+-]+)\]")
 COMPILE_LINE = re.compile(r"Building (?:CXX|C|OBJCXX|OBJC) object ")
@@ -90,6 +111,25 @@ def fatal(msg):
     print(f"warning-gate: FATAL: {msg}", file=sys.stderr)
     sys.exit(2)
 
+
+
+def repo_root():
+    """The consumer's checkout: REPO_ROOT, else $GITHUB_WORKSPACE, else the git
+    checkout around the current directory. Never this file's own location: the
+    gate lives in one repository and judges another, and a root taken from its
+    own path would judge the wrong one and pass."""
+    root = os.environ.get("REPO_ROOT") or os.environ.get("GITHUB_WORKSPACE")
+    if not root:
+        try:
+            out = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                                 capture_output=True, text=True, check=False)
+        except OSError:
+            out = None
+        if out is not None and out.returncode == 0:
+            root = out.stdout.strip()
+    if not root or not os.path.isdir(root):
+        fatal("no repository to judge -- set REPO_ROOT, or run inside a checkout")
+    return Path(root).resolve()
 
 
 def compiler_facts(build):
@@ -121,8 +161,8 @@ LEG_NAME = re.compile(r"[A-Za-z0-9_.-]+")
 
 def baseline_key(build: Path, leg=None):
     """The baseline section a build tree is judged by: the compiler's key, and
-    `/<leg>` after it when the workflow names one. check-warning-floor.sh asks
-    this same function, so the floor and the counts come from one section."""
+    `/<leg>` after it when the workflow names one. The floor rule asks this
+    same function, so the floor and the counts come from one section."""
     key = compiler_key(build)
     if leg is None:
         return key
@@ -266,18 +306,81 @@ def section(base, key):
 def compile_unit_floor(base, sect):
     """The compile-line count a log must reach before it is scored: the
     compiler's own section first, then the top level where the older layout
-    kept it. None when neither names one. check-warning-floor.sh asks this same
-    function, so the two can never read the floor from different places."""
+    kept it. None when neither names one. The floor rule and the log rule both
+    ask this one function, so they can never read it from different places."""
     for source in (sect or {}, base or {}):
         if "min_compile_units" in source:
             return source["min_compile_units"]
     return None
 
 
+NINJA_COMPILE_EDGE = re.compile(r"^build .*: (?:CXX|C|OBJCXX|OBJC)_COMPILER")
+
+
+def configured_edges(build: Path):
+    """Compile edges in the configured graph, or None without a build.ninja.
+    Ninja only, by design: another generator's graph is not read, and a floor
+    that cannot be measured is not called reachable."""
+    ninja = build / "build.ninja"
+    if not ninja.is_file():
+        return None
+    with ninja.open(errors="replace") as fh:
+        return sum(1 for ln in fh if NINJA_COMPILE_EDGE.match(ln))
+
+
+def floor_verdict(key, floor, edges, build):
+    """(rc, lines) for a recorded floor against the configured graph."""
+    if floor is None:
+        return 2, [f"FATAL: {BASELINE_REL} has no min_compile_units for {key}"]
+    if not isinstance(floor, int) or isinstance(floor, bool):
+        return 2, [f"FATAL: min_compile_units is not a number: {floor!r}"]
+    if floor == 0:
+        return 1, [f"FAIL: {key} min_compile_units is 0 -- the anti-vacuum rule is disarmed"]
+    if edges == 0:
+        return 2, [f"FATAL: {build}/build.ninja has no compile edges -- cannot measure"]
+    if floor > edges:
+        return 1, [
+            f"FAIL: {BASELINE_REL} {key} min_compile_units={floor} but the configured graph",
+            f"      has only {edges} compile edges. No full build can ever reach that floor, so",
+            "      every log would be refused and the build blamed. Re-record with:",
+            f"        warning-gate.py --update --build-dir {build} <full-build.log>",
+            f"      or set min_compile_units to {edges} if the categories are still current."]
+    lines = []
+    if floor < edges:
+        lines += [f"note: min_compile_units={floor}, configured graph has {edges} -- "
+                  f"floor is {edges - floor} low.",
+                  "      Reachable, so this is not a failure; re-record when the "
+                  "categories are next measured."]
+    lines.append(f"OK: {key} min_compile_units={floor} is reachable "
+                 f"({edges} compile edges configured)")
+    return 0, lines
+
+
+def floor_only(build, leg, baseline):
+    """--floor: the recorded floor against the configured graph, and nothing else."""
+    if not baseline.is_file():
+        fatal(f"no baseline at {BASELINE_REL}")
+    if not (build / "build.ninja").is_file():
+        fatal(f"no {build}/build.ninja (Ninja generator required)")
+    key = baseline_key(build, leg)          # exits 2 if unconfigured
+    base = json.loads(baseline.read_text())
+    sect = section(base, key)
+    if sect is None:
+        fatal(f"{BASELINE_REL} has no section for {key}, the key {build} is judged by")
+    rc, lines = floor_verdict(key, compile_unit_floor(base, sect),
+                              configured_edges(build), build)
+    for ln in lines:
+        print(ln, file=sys.stderr if rc else sys.stdout)
+    return rc
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--update", action="store_true")
+    ap.add_argument("--floor", action="store_true",
+                    help="judge only the recorded floor against the configured "
+                         "graph; takes no log")
     ap.add_argument("--require-key", action="store_true",
                     help="a compiler the baseline has never seen is a failure, "
                          "not a report; for CI, where the alternative is a check "
@@ -286,27 +389,48 @@ def main():
                     help="the workflow leg this tree was built for; judged by the "
                          "section <compiler>/<leg> instead of <compiler>")
     ap.add_argument("--build-dir", required=True)
-    ap.add_argument("log")
+    ap.add_argument("log", nargs="?")
     args = ap.parse_args()
-    if args.check == args.update:
+    if sum((args.check, args.update, args.floor)) != 1 or \
+            (args.floor and args.log is not None) or \
+            (not args.floor and args.log is None):
         print("warning-gate: FATAL: usage: warning-gate.py --check|--update <build.log> "
-              "--build-dir <dir>", file=sys.stderr)
+              "--build-dir <dir>  |  --floor --build-dir <dir>", file=sys.stderr)
         return 2
 
+    root = repo_root()
+    os.chdir(root)
+    baseline = root / BASELINE_REL
     build = Path(args.build_dir)
     if not build.is_dir():
         fatal(f"build dir '{build}' not found")
+    if args.floor:
+        return floor_only(build, args.leg, baseline)
     key = baseline_key(build, args.leg)
-    counts, seen_reasons, units, unresolvable = scan(Path(args.log), build, REPO_ROOT)
+    counts, seen_reasons, units, unresolvable = scan(Path(args.log), build, root)
 
     if unresolvable:
         fatal(f"{len(unresolvable)} tagged diagnostic(s) carry no location to "
               f"resolve, so they cannot be attributed to anyone: "
               f"{unresolvable[0]!r} -- this is not a log this check can read")
 
-    base = json.loads(BASELINE.read_text()) if BASELINE.is_file() else None
+    base = json.loads(baseline.read_text()) if baseline.is_file() else None
     sect = section(base or {}, key)
     expected_units = compile_unit_floor(base, sect) or 0
+
+    # The floor first: a floor the configured graph cannot reach would refuse
+    # this log below and blame the build for it. --update re-records the floor,
+    # so it is exempt.
+    # A floor of 0 is disarmed whatever the graph holds; above the graph needs
+    # the graph, so without a build.ninja only the first half is asked.
+    edges = configured_edges(build)
+    floor = compile_unit_floor(base, sect) if sect is not None else None
+    if args.check and floor is not None:
+        frc, lines = floor_verdict(key, floor, floor if edges is None else edges, build)
+        if frc == 1:
+            for ln in lines:
+                print(ln)
+            return 1
 
     if units < expected_units:
         fatal(f"log has {units} compile lines, baseline expects >= {expected_units} — "
@@ -330,7 +454,7 @@ def main():
             # human writes it.
             "system_reasons": {k: kept.get(k, "") for k in sorted(seen_reasons)},
         }
-        BASELINE.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+        baseline.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
         total = sum(counts["project"].values()) + sum(counts["system"].values())
         print(f"ci/warning-baseline.json: {key}, {total} warning(s) over {units} "
               f"compile units — {sum(counts['project'].values())} ours, "

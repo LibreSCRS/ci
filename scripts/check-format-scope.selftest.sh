@@ -20,7 +20,16 @@
 #   6  no ci/format-dirs.txt at all              -> 2
 #   7  an untracked file outside every root      -> 0 (only git ls-files counts)
 #   8  a .mm file outside every root             -> 1 (Objective-C++ counts)
+#   9  REPO_ROOT names a stray tree, cwd elsewhere -> 1 (the root is REPO_ROOT)
+#  10  only GITHUB_WORKSPACE, cwd elsewhere      -> 1 (the CI default)
+#  11  neither, cwd inside the stray tree        -> 1 (the checkout around cwd)
+#  12  neither, cwd outside every checkout       -> 2 (nothing to judge)
+#
+# The gate is run from outside the fixture, never from a copy placed inside it:
+# it lives in one repository and judges another, so a gate that still found its
+# root from its own path would judge this repository and pass.
 set -uo pipefail
+unset REPO_ROOT GITHUB_WORKSPACE
 
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-format-scope.sh"
 WORK="$(mktemp -d /var/tmp/fmtscope-selftest.XXXXXX)"
@@ -34,9 +43,7 @@ red=0
 make_repo() {
     local name="$1"; shift
     local root="$WORK/$name"
-    mkdir -p "$root/ci/scripts" "$root/lib" "$root/test" "$root/tools"
-    cp "$CHECK" "$root/ci/scripts/check-format-scope.sh"
-    chmod +x "$root/ci/scripts/check-format-scope.sh"
+    mkdir -p "$root/ci" "$root/lib" "$root/test" "$root/tools"
     echo 'int a;' > "$root/lib/a.cpp"
     echo 'int b;' > "$root/test/b.cpp"
     git -C "$root" init -q
@@ -44,6 +51,9 @@ make_repo() {
     git -C "$root" config user.name t
     echo "$root"
 }
+
+# gate <root>: judge <root> from a directory that is not inside it.
+gate() { (cd "$WORK" && REPO_ROOT="$1" bash "$CHECK" 2>&1); }
 
 commit_all() { git -C "$1" add -A && git -C "$1" -c commit.gpgsign=false commit -qm x; }
 
@@ -61,13 +71,13 @@ check() {
 
 # --- case 1
 r="$(make_repo c1)"; printf 'lib\ntest\n' > "$r/ci/format-dirs.txt"; commit_all "$r"
-out="$(bash "$r/ci/scripts/check-format-scope.sh" 2>&1)"; rc=$?
+out="$(gate "$r")"; rc=$?
 check 1 0 $rc
 
 # --- case 2
 r="$(make_repo c2)"; printf 'lib\ntest\n' > "$r/ci/format-dirs.txt"
 echo 'int c;' > "$r/tools/stray.cpp"; commit_all "$r"
-out="$(bash "$r/ci/scripts/check-format-scope.sh" 2>&1)"; rc=$?
+out="$(gate "$r")"; rc=$?
 check 2 1 $rc
 case "$out" in *"tools/stray.cpp"*) ;; *) echo "  case 2: FAIL — the output does not name tools/stray.cpp"; fail=$((fail + 1)) ;; esac
 case "$out" in *"1 tracked source file(s) are outside"*) ;; *) echo "  case 2: FAIL — wrong summary"; fail=$((fail + 1)) ;; esac
@@ -76,37 +86,51 @@ case "$out" in *"1 tracked source file(s) are outside"*) ;; *) echo "  case 2: F
 r="$(make_repo c3)"; printf 'lib\ntest\n' > "$r/ci/format-dirs.txt"
 printf '# fed to the compiler verbatim as a probe\n^tools/stray\\.cpp$\n' > "$r/ci/format-exclude.txt"
 echo 'int c;' > "$r/tools/stray.cpp"; commit_all "$r"
-out="$(bash "$r/ci/scripts/check-format-scope.sh" 2>&1)"; rc=$?
+out="$(gate "$r")"; rc=$?
 check 3 0 $rc
 
 # --- case 4: a listed root that is not on disk
 r="$(make_repo c4)"; printf 'lib\ntest\nnowhere\n' > "$r/ci/format-dirs.txt"; commit_all "$r"
-out="$(bash "$r/ci/scripts/check-format-scope.sh" 2>&1)"; rc=$?
+out="$(gate "$r")"; rc=$?
 check 4 2 $rc
 case "$out" in *"nowhere"*) ;; *) echo "  case 4: FAIL — message does not name the stale root"; fail=$((fail + 1)) ;; esac
 
 # --- case 5: an empty list
 r="$(make_repo c5)"; printf '# only a comment\n' > "$r/ci/format-dirs.txt"; commit_all "$r"
-out="$(bash "$r/ci/scripts/check-format-scope.sh" 2>&1)"; rc=$?
+out="$(gate "$r")"; rc=$?
 check 5 2 $rc
 
 # --- case 6: no list at all
 r="$(make_repo c6)"; commit_all "$r"
-out="$(bash "$r/ci/scripts/check-format-scope.sh" 2>&1)"; rc=$?
+out="$(gate "$r")"; rc=$?
 check 6 2 $rc
 
 # --- case 7: an untracked stray does not fail the gate
 r="$(make_repo c7)"; printf 'lib\ntest\n' > "$r/ci/format-dirs.txt"; commit_all "$r"
 echo 'int c;' > "$r/tools/untracked.cpp"
-out="$(bash "$r/ci/scripts/check-format-scope.sh" 2>&1)"; rc=$?
+out="$(gate "$r")"; rc=$?
 check 7 0 $rc
 
 # --- case 8: Objective-C++ counts
 r="$(make_repo c8)"; printf 'lib\ntest\n' > "$r/ci/format-dirs.txt"
 echo 'int d;' > "$r/tools/bridge.mm"; commit_all "$r"
-out="$(bash "$r/ci/scripts/check-format-scope.sh" 2>&1)"; rc=$?
+out="$(gate "$r")"; rc=$?
 check 8 1 $rc
 case "$out" in *"tools/bridge.mm"*) ;; *) echo "  case 8: FAIL — .mm not counted"; fail=$((fail + 1)) ;; esac
+
+# --- cases 9-12: where the root comes from
+r="$(make_repo c9)"; printf 'lib\ntest\n' > "$r/ci/format-dirs.txt"
+echo 'int c;' > "$r/tools/stray.cpp"; commit_all "$r"
+out="$(cd "$WORK" && REPO_ROOT="$r" bash "$CHECK" 2>&1)"; rc=$?
+check 9 1 $rc
+out="$(cd "$WORK" && GITHUB_WORKSPACE="$r" bash "$CHECK" 2>&1)"; rc=$?
+check 10 1 $rc
+out="$(cd "$r/lib" && bash "$CHECK" 2>&1)"; rc=$?
+check 11 1 $rc
+mkdir -p "$WORK/nowhere"
+out="$(cd "$WORK/nowhere" && GIT_CEILING_DIRECTORIES="$WORK" bash "$CHECK" 2>&1)"; rc=$?
+check 12 2 $rc
+case "$out" in *"no repository to judge"*) ;; *) echo "  case 12: FAIL — wrong message: $out"; fail=$((fail + 1)) ;; esac
 
 echo "selftest: $pass passed, $fail failed"
 printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"

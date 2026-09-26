@@ -83,14 +83,24 @@ CASES = 0
 RED = 0
 
 
-def run_scan(ws, reg, repo=None):
+# The runner's own checkout must never leak in as the judged repository.
+BASE_ENV = {k: v for k, v in os.environ.items()
+            if k not in ("REPO_ROOT", "GITHUB_WORKSPACE", "GITHUB_REPOSITORY")}
+
+
+def run_scan(ws, reg, repo=None, env=None, cwd=None):
     # Every invocation is one case, and a non-zero return on a perturbed
-    # input is a case that proved the gate red.
+    # input is a case that proved the gate red. ws=None runs without
+    # --workspace: the checkout comes from the environment, as in CI.
     global CASES, RED
-    cmd = [sys.executable, SCAN, "--workspace", ws, "--registry", reg]
+    cmd = [sys.executable, SCAN, "--registry", reg]
+    if ws is not None:
+        cmd += ["--workspace", ws]
     if repo:
         cmd += ["--repo", repo]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          env=dict(BASE_ENV, **(env or {})),
+                          cwd=cwd or tempfile.gettempdir())
     CASES += 1
     if proc.returncode != 0:
         RED += 1
@@ -107,7 +117,8 @@ def main() -> int:
             print(f"FAIL  {case}  {detail}")
             failures.append(case)
 
-    root = tempfile.mkdtemp(prefix="dup-scan-selftest-")
+    root = tempfile.mkdtemp(prefix="dup-scan-selftest-",
+                            dir=os.environ.get("TMPDIR") or "/var/tmp")
     try:
         empty = registry(root, "empty", [])
         sanctioned = registry(root, "sanctioned", [
@@ -176,6 +187,22 @@ def main() -> int:
                        {"include/other.h": body("other")})
         rc, out = run_scan(ws, patterned)
         check("a pattern row does not cover paths outside it", rc == 1, f"rc={rc}\n{out}")
+
+        # Without --workspace: the one checkout the environment names.
+        ws = workspace(root, "env", {"include/vendored.h": IDENTICAL, "include/copy.h": IDENTICAL},
+                       {"include/b.h": body("beta")})
+        rc, out = run_scan(None, empty, env={"REPO_ROOT": os.path.join(ws, ONE)})
+        check("REPO_ROOT alone judges that checkout", rc == 1 and "copy.h" in out,
+              f"rc={rc}\n{out}")
+        rc, out = run_scan(None, empty, env={"GITHUB_WORKSPACE": os.path.join(ws, TWO)})
+        check("GITHUB_WORKSPACE alone judges that checkout", rc == 0, f"rc={rc}\n{out}")
+        rc, out = run_scan(None, empty, cwd=os.path.join(ws, ONE, "include"))
+        check("the checkout around the cwd is judged", rc == 1, f"rc={rc}\n{out}")
+        nowhere = os.path.join(root, "nowhere")
+        os.makedirs(nowhere)
+        rc, out = run_scan(None, empty, env={"GIT_CEILING_DIRECTORIES": root}, cwd=nowhere)
+        check("no checkout at all exits 2", rc == 2 and "no repository to judge" in out,
+              f"rc={rc}\n{out}")
 
         broken = os.path.join(root, "not-a-repo")
         os.makedirs(os.path.join(broken, ONE, "include"))

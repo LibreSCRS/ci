@@ -18,7 +18,16 @@
 #   6  no manifest committed                  -> 2
 #   7  --update refuses an empty listing      -> 2, and the file is unchanged
 #   8  ctest itself fails                     -> 2
+#   9  a `# GetParam()` comment is not part of a name -> 0
+#  10  REPO_ROOT names the tree, cwd elsewhere -> 1 (the root is REPO_ROOT, and
+#      a relative build dir is read from it)
+#  11  only GITHUB_WORKSPACE, cwd elsewhere   -> 1 (the CI default)
+#  12  neither, cwd outside every checkout     -> 2 (nothing to judge)
+#
+# The gate runs from its own place in this repository against the fixture: it
+# lives in one repository and judges another.
 set -uo pipefail
+unset REPO_ROOT GITHUB_WORKSPACE
 
 GATE="$(cd "$(dirname "$0")" && pwd)/test-manifest-gate.sh"
 WORK="$(mktemp -d /var/tmp/tmgate-selftest.XXXXXX)"
@@ -34,9 +43,8 @@ red=0
 make_env() {
     local name="$1" listing="$2" ctest_rc="${3:-0}"
     local root="$WORK/$name"
-    mkdir -p "$root/ci/scripts" "$root/bin" "$root/build"
-    cp "$GATE" "$root/ci/scripts/test-manifest-gate.sh"
-    chmod +x "$root/ci/scripts/test-manifest-gate.sh"
+    mkdir -p "$root/ci" "$root/bin" "$root/build"
+    git -C "$root" init -q
     {
         echo '#!/usr/bin/env bash'
         printf 'cat <<%s\n' "'LIST'"
@@ -82,56 +90,56 @@ empty="$(printf 'Test project /nowhere\n\nTotal Tests: 0\n')"
 
 # --- case 1: identical listing -> 0
 root="$(make_env c1 "$three")"
-( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --update build linux >/dev/null 2>&1 )
-out="$( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --check build linux 2>&1 )"; rc=$?
+( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --update build linux >/dev/null 2>&1 )
+out="$( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --check build linux 2>&1 )"; rc=$?
 check 1 0 $rc
 case "$out" in *"3 tests, manifest matches"*) ;; *) echo "  case 1: FAIL — wrong message: $out"; fail=$((fail + 1)) ;; esac
 
 # --- case 2: one test removed -> 1, and it is named
 root="$(make_env c2 "$three")"
-( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --update build linux >/dev/null 2>&1 )
+( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --update build linux >/dev/null 2>&1 )
 # The build now discovers one fewer test than the committed manifest.
 ( cd "$root" && { echo '#!/usr/bin/env bash'; printf 'cat <<%s\n' "'LIST'"; printf '%s\n' "$two"; echo "LIST"; } > bin/ctest; chmod +x bin/ctest )
-out="$( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --check build linux 2>&1 )"; rc=$?
+out="$( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --check build linux 2>&1 )"; rc=$?
 check 2 1 $rc
 case "$out" in *"Beta.Two"*) ;; *) echo "  case 2: FAIL — the diff does not name Beta.Two"; fail=$((fail + 1)) ;; esac
 case "$out" in *"+0 / -1 tests"*) ;; *) echo "  case 2: FAIL — wrong summary: $out"; fail=$((fail + 1)) ;; esac
 
 # --- case 3: one test added -> 1
 root="$(make_env c3 "$three")"
-( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --update build linux >/dev/null 2>&1 )
+( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --update build linux >/dev/null 2>&1 )
 ( cd "$root" && { echo '#!/usr/bin/env bash'; printf 'cat <<%s\n' "'LIST'"; printf '%s\n' "$four"; echo "LIST"; } > bin/ctest; chmod +x bin/ctest )
-out="$( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --check build linux 2>&1 )"; rc=$?
+out="$( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --check build linux 2>&1 )"; rc=$?
 check 3 1 $rc
 case "$out" in *"+1 / -0 tests"*) ;; *) echo "  case 3: FAIL — wrong summary: $out"; fail=$((fail + 1)) ;; esac
 
 # --- case 4: _NOT_BUILT in the listing -> 2, no comparison at all
 root="$(make_env c4 "$three")"
-( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --update build linux >/dev/null 2>&1 )
+( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --update build linux >/dev/null 2>&1 )
 ( cd "$root" && { echo '#!/usr/bin/env bash'; printf 'cat <<%s\n' "'LIST'"; printf '%s\n' "$notbuilt"; echo "LIST"; } > bin/ctest; chmod +x bin/ctest )
-out="$( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --check build linux 2>&1 )"; rc=$?
+out="$( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --check build linux 2>&1 )"; rc=$?
 check 4 2 $rc
 case "$out" in *"_NOT_BUILT"*) ;; *) echo "  case 4: FAIL — message does not name _NOT_BUILT"; fail=$((fail + 1)) ;; esac
 
 # --- case 5: empty listing -> 2
 root="$(make_env c5 "$three")"
-( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --update build linux >/dev/null 2>&1 )
+( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --update build linux >/dev/null 2>&1 )
 ( cd "$root" && { echo '#!/usr/bin/env bash'; printf 'cat <<%s\n' "'LIST'"; printf '%s\n' "$empty"; echo "LIST"; } > bin/ctest; chmod +x bin/ctest )
-out="$( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --check build linux 2>&1 )"; rc=$?
+out="$( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --check build linux 2>&1 )"; rc=$?
 check 5 2 $rc
 
 # --- case 6: no manifest committed -> 2
 root="$(make_env c6 "$three")"
-out="$( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --check build linux 2>&1 )"; rc=$?
+out="$( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --check build linux 2>&1 )"; rc=$?
 check 6 2 $rc
 case "$out" in *"no manifest at ci/test-manifest.linux.txt"*) ;; *) echo "  case 6: FAIL — wrong message: $out"; fail=$((fail + 1)) ;; esac
 
 # --- case 7: --update refuses an empty listing, and leaves the file alone
 root="$(make_env c7 "$three")"
-( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --update build linux >/dev/null 2>&1 )
+( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --update build linux >/dev/null 2>&1 )
 before="$(sha256sum "$root/ci/test-manifest.linux.txt" | cut -d' ' -f1)"
 ( cd "$root" && { echo '#!/usr/bin/env bash'; printf 'cat <<%s\n' "'LIST'"; printf '%s\n' "$empty"; echo "LIST"; } > bin/ctest; chmod +x bin/ctest )
-out="$( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --update build linux 2>&1 )"; rc=$?
+out="$( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --update build linux 2>&1 )"; rc=$?
 after="$(sha256sum "$root/ci/test-manifest.linux.txt" | cut -d' ' -f1)"
 check 7 2 $rc
 if [ -n "$before" ] && [ "$before" = "$after" ]; then
@@ -144,9 +152,9 @@ fi
 
 # --- case 8: ctest itself fails -> 2
 root="$(make_env c8 "$three")"
-( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --update build linux >/dev/null 2>&1 )
+( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --update build linux >/dev/null 2>&1 )
 ( cd "$root" && { echo '#!/usr/bin/env bash'; echo 'echo "ctest: broken" >&2'; echo 'exit 8'; } > bin/ctest; chmod +x bin/ctest )
-out="$( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --check build linux 2>&1 )"; rc=$?
+out="$( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --check build linux 2>&1 )"; rc=$?
 check 8 2 $rc
 
 # --- case 9: the parameter comment gtest prints after a name is not identity -> 0
@@ -155,19 +163,33 @@ check 8 2 $rc
 # recorded from a build without it must still match.
 commented="$(listing_of Alpha.One 'Beta.Two  # GetParam() = 64-byte object <C0-1E FD-9F 41-56 00-00 0B-00>' Gamma.Three)"
 root="$(make_env c9 "$three")"
-( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --update build linux >/dev/null 2>&1 )
+( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --update build linux >/dev/null 2>&1 )
 ( cd "$root" && { echo '#!/usr/bin/env bash'; printf 'cat <<%s\n' "'LIST'"; printf '%s\n' "$commented"; echo "LIST"; } > bin/ctest; chmod +x bin/ctest )
-out="$( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --check build linux 2>&1 )"; rc=$?
+out="$( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --check build linux 2>&1 )"; rc=$?
 check 9 0 $rc
 case "$out" in *"3 tests, manifest matches"*) ;; *) echo "  case 9: FAIL — the comment was read as part of the name: $out"; fail=$((fail + 1)) ;; esac
 # and --update from such a listing records the bare name, not the comment
-( cd "$root" && PATH="$root/bin:$PATH" bash ci/scripts/test-manifest-gate.sh --update build linux >/dev/null 2>&1 )
+( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --update build linux >/dev/null 2>&1 )
 cases=$((cases + 1))
 if grep -q '#' "$root/ci/test-manifest.linux.txt"; then
     echo "case 9b: FAIL — --update recorded the comment"; fail=$((fail + 1))
 else
     echo "case 9b: OK   — --update records the bare name"; pass=$((pass + 1))
 fi
+
+# --- cases 10-12: where the root comes from
+root="$(make_env c10 "$three")"
+( cd "$root" && PATH="$root/bin:$PATH" bash "$GATE" --update build linux >/dev/null 2>&1 )
+( cd "$root" && { echo '#!/usr/bin/env bash'; printf 'cat <<%s\n' "'LIST'"; printf '%s\n' "$two"; echo "LIST"; } > bin/ctest; chmod +x bin/ctest )
+out="$( cd "$WORK" && REPO_ROOT="$root" PATH="$root/bin:$PATH" bash "$GATE" --check build linux 2>&1 )"; rc=$?
+check 10 1 $rc
+case "$out" in *"Beta.Two"*) ;; *) echo "  case 10: FAIL — the diff does not name Beta.Two: $out"; fail=$((fail + 1)) ;; esac
+out="$( cd "$WORK" && GITHUB_WORKSPACE="$root" PATH="$root/bin:$PATH" bash "$GATE" --check build linux 2>&1 )"; rc=$?
+check 11 1 $rc
+mkdir -p "$WORK/nowhere"
+out="$( cd "$WORK/nowhere" && GIT_CEILING_DIRECTORIES="$WORK" PATH="$root/bin:$PATH" bash "$GATE" --check build linux 2>&1 )"; rc=$?
+check 12 2 $rc
+case "$out" in *"no repository to judge"*) ;; *) echo "  case 12: FAIL — wrong message: $out"; fail=$((fail + 1)) ;; esac
 
 echo "selftest: $pass passed, $fail failed"
 printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"

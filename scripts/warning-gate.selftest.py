@@ -36,8 +36,36 @@ Cases:
 
 Cases 19-22 fail against the gate as it was before --leg existed: it refused
 the flag, so it could only ever judge a whole matrix by one compiler section.
+
+The floor (--floor, and inside --check). These were the separate floor check's
+cases, kept one for one when it became a mode of this gate:
+  F1  floor below the graph is reachable, and the slack is named   -> 0
+  F2  floor equal to the graph                                     -> 0
+  F3  floor above the graph, both numbers named                    -> 1
+  F4  a zero floor                                                 -> 1
+  F5  no baseline                                                  -> 2
+  F6  no build.ninja                                               -> 2
+  F7  a graph with no compile edges                                -> 2
+  F8  the per-compiler layout --update writes is read              -> 0
+  F9  a GCC 13 tree is judged by GNU-13, not GNU-16                -> 0
+  F10 a GCC 16 tree over the same file, on the GNU-16 floor        -> 1
+  F11 a compiler with no section                                   -> 2
+  F12 the older top-level floor, unreachable                       -> 1
+  F13 an unconfigured tree                                         -> 2
+  F14 --leg picks its own floor (native green, both red)           -> 0 / 1
+  F15 a leg with no section is not judged by the plain key         -> 2
+  F16 --check over an unreachable floor fails and names the floor,
+      instead of refusing the log and blaming the build            -> 1
+  F17 --check with a floor of 0                                    -> 1
+
+Where the root comes from (the gate lives in one repository and judges
+another; each of these runs it from a directory outside the fixture):
+  R1  only GITHUB_WORKSPACE names the tree                         -> 1
+  R2  neither, cwd inside the tree                                 -> 1
+  R3  neither, cwd outside every checkout                          -> 2
 """
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -46,6 +74,9 @@ from pathlib import Path
 
 GATE = Path(__file__).resolve().parent / "warning-gate.py"
 WORK = Path(tempfile.mkdtemp(prefix="warngate-selftest.", dir="/var/tmp"))
+# The runner's own checkout must never leak in as the judged repository.
+BASE_ENV = {k: v for k, v in os.environ.items()
+            if k not in ("REPO_ROOT", "GITHUB_WORKSPACE")}
 passed = failed = 0
 cases = red = 0
 
@@ -77,22 +108,46 @@ def free_block(chain, header=SYS_HDR):
 
 def make_repo(name, compiler=("GNU", "16.2.1")):
     root = WORK / name
-    (root / "ci" / "scripts").mkdir(parents=True)
+    (root / "ci").mkdir(parents=True)
     cmf = root / "build" / "CMakeFiles" / "4.4.2"
     cmf.mkdir(parents=True)
     (root / "build" / "CMakeCache.txt").write_text("CMAKE_BUILD_TYPE:STRING=Release\n")
     (cmf / "CMakeCXXCompiler.cmake").write_text(
         f'set(CMAKE_CXX_COMPILER_ID "{compiler[0]}")\n'
         f'set(CMAKE_CXX_COMPILER_VERSION "{compiler[1]}")\n')
-    shutil.copy(GATE, root / "ci" / "scripts" / "warning-gate.py")
     return root
 
 
-def run(root, *args):
-    r = subprocess.run([sys.executable, str(root / "ci" / "scripts" / "warning-gate.py"),
-                        *args, "--build-dir", str(root / "build")],
-                       capture_output=True, text=True, cwd=root)
+def run(root, *args, env=None, cwd=None, build="build"):
+    """Judge <root> from WORK, which is not inside it."""
+    e = dict(BASE_ENV, REPO_ROOT=str(root)) if env is None else dict(BASE_ENV, **env)
+    r = subprocess.run([sys.executable, str(GATE), *args, "--build-dir", str(root / build)],
+                       capture_output=True, text=True, cwd=cwd or WORK, env=e)
     return r.returncode, r.stdout + r.stderr
+
+
+def ninja(root, edges, build="build"):
+    """A configured graph with <edges> compile edges."""
+    b = root / build
+    b.mkdir(parents=True, exist_ok=True)
+    text = "".join(f"build x{i}.o: CXX_COMPILER__t_unscanned ../s{i}.cpp\n"
+                   for i in range(edges))
+    (b / "build.ninja").write_text(text + "build all: phony x0.o\n")
+
+
+def floor_repo(name, floor, edges, ver="13.2.0", baseline=None):
+    """The floor check's fixture: a tree configured by GCC <ver>, and the
+    layout --update writes (the floor inside that compiler's section) unless a
+    whole baseline is given. NONE leaves the baseline or the graph out."""
+    r = make_repo(name, ("GNU", ver))
+    if baseline is not None:
+        (r / "ci" / "warning-baseline.json").write_text(baseline + "\n")
+    elif floor != "NONE":
+        write_baseline(r, {f"GNU-{ver.split('.')[0]}": {
+            "min_compile_units": floor, "project": {}, "system": {}, "system_reasons": {}}})
+    if edges != "NONE":
+        ninja(r, edges)
+    return r
 
 
 def write_baseline(root, obj):
@@ -296,6 +351,74 @@ try:
     r = make_repo("c22"); write_baseline(r, legs()); make_log(r / "x.log", 620, W)
     rc, out = run(r, "--check", "--leg", "a b", str(r / "x.log"))
     check(22, 2, rc, "is not a leg name" in out, out)
+
+    # --- the floor --------------------------------------------------------
+    r = floor_repo("f1", 100, 111); rc, out = run(r, "--floor")
+    check("F1", 0, rc, "floor is 11 low" in out, out)
+    r = floor_repo("f2", 111, 111); rc, out = run(r, "--floor")
+    check("F2", 0, rc, "GNU-13 min_compile_units=111 is reachable" in out, out)
+    r = floor_repo("f3", 122, 111); rc, out = run(r, "--floor")
+    check("F3", 1, rc, "min_compile_units=122" in out and "only 111 compile edges" in out, out)
+    r = floor_repo("f4", 0, 111); rc, out = run(r, "--floor")
+    check("F4", 1, rc, "anti-vacuum rule is disarmed" in out, out)
+    r = floor_repo("f5", "NONE", 111); rc, out = run(r, "--floor")
+    check("F5", 2, rc, "no baseline" in out, out)
+    r = floor_repo("f6", 111, "NONE"); rc, out = run(r, "--floor")
+    check("F6", 2, rc, "build.ninja" in out, out)
+    r = floor_repo("f7", 111, 0); rc, out = run(r, "--floor")
+    check("F7", 2, rc, "no compile edges" in out, out)
+    r = floor_repo("f8", 111, 111); rc, out = run(r, "--floor")
+    check("F8", 0, rc, "GNU-13 min_compile_units=111 is reachable" in out, out)
+    two = ('{"GNU-13": {"min_compile_units": 100, "project": {}, "system": {}, "system_reasons": {}},'
+           ' "GNU-16": {"min_compile_units": 400, "project": {}, "system": {}, "system_reasons": {}}}')
+    r = floor_repo("f9", None, 111, "13.2.0", two); rc, out = run(r, "--floor")
+    check("F9", 0, rc, "GNU-13 min_compile_units=100 is reachable" in out, out)
+    r = floor_repo("f10", None, 111, "16.1.1", two); rc, out = run(r, "--floor")
+    check("F10", 1, rc, "GNU-16 min_compile_units=400" in out and "only 111 compile edges" in out, out)
+    r = floor_repo("f11", None, 111, "14.2.0", '{"GNU-13": {"min_compile_units": 100}}')
+    rc, out = run(r, "--floor")
+    check("F11", 2, rc, "no section for GNU-14" in out, out)
+    r = floor_repo("f12", None, 111, "13.2.0", '{"GNU-13": {"-Wcomment": 3}, "min_compile_units": 122}')
+    rc, out = run(r, "--floor")
+    check("F12", 1, rc, "GNU-13 min_compile_units=122" in out, out)
+    r = floor_repo("f13", 111, 111); (r / "build" / "CMakeCache.txt").unlink()
+    rc, out = run(r, "--floor")
+    check("F13", 2, rc, "not a configured build tree" in out, out)
+    legs2 = ('{"GNU-13/native": {"min_compile_units": 366, "project": {}, "system": {}, "system_reasons": {}},'
+             ' "GNU-13/both": {"min_compile_units": 371, "project": {}, "system": {}, "system_reasons": {}}}')
+    r = floor_repo("f14", None, 368, "13.2.0", legs2)
+    rc, out = run(r, "--floor", "--leg", "native")
+    check("F14a", 0, rc, "GNU-13/native min_compile_units=366 is reachable" in out, out)
+    rc, out = run(r, "--floor", "--leg", "both")
+    check("F14b", 1, rc, "GNU-13/both min_compile_units=371" in out, out)
+    r = floor_repo("f15", 100, 111); rc, out = run(r, "--floor", "--leg", "both")
+    check("F15", 2, rc, "no section for GNU-13/both" in out, out)
+
+    # F16: the same stale floor under --check is named, not blamed on the log
+    r = make_repo("f16"); write_baseline(r, partitioned(units=900)); ninja(r, 700)
+    make_log(r / "full.log", 700, W)
+    rc, out = run(r, "--check", str(r / "full.log"))
+    check("F16", 1, rc, "min_compile_units=900" in out and "only 700 compile edges" in out
+          and "incremental build" not in out, out)
+    # F17: a floor of 0 under --check, with or without a graph
+    r = make_repo("f17"); write_baseline(r, partitioned(units=0))
+    make_log(r / "full.log", 620, W)
+    rc, out = run(r, "--check", str(r / "full.log"))
+    check("F17", 1, rc, "anti-vacuum rule is disarmed" in out, out)
+
+    # --- where the root comes from ----------------------------------------
+    r = make_repo("r1"); make_log(r / "build.log", 620, W)
+    run(r, "--update", str(r / "build.log"))
+    make_log(r / "more.log", 620, W + [W[0]])
+    rc, out = run(r, "--check", str(r / "more.log"), env={"GITHUB_WORKSPACE": str(r)})
+    check("R1", 1, rc, "-Wcomment: 31" in out, out)
+    subprocess.run(["git", "init", "-q", str(r)], check=True)
+    rc, out = run(r, "--check", str(r / "more.log"), env={}, cwd=r / "build")
+    check("R2", 1, rc, "-Wcomment: 31" in out, out)
+    nowhere = WORK / "nowhere"; nowhere.mkdir()
+    rc, out = run(r, "--check", str(r / "more.log"),
+                  env={"GIT_CEILING_DIRECTORIES": str(WORK)}, cwd=nowhere)
+    check("R3", 2, rc, "no repository to judge" in out, out)
 
     print(f"selftest: {passed} passed, {failed} failed")
     print(f"selftest: {cases} cases, {red} red-proved")

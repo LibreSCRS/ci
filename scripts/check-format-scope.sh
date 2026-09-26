@@ -18,17 +18,25 @@
 # with a comment saying why — never silently.
 #
 # Usage:
-#   ci/scripts/check-format-scope.sh
+#   REPO_ROOT=<consumer checkout> scripts/check-format-scope.sh
+#
+# The repository judged is REPO_ROOT, else $GITHUB_WORKSPACE, else the git
+# checkout around the current directory -- never the one this script lives in.
 #
 # Exit codes:
 #   0  every tracked source is under a formatted root or explicitly excluded
 #   1  at least one is not; they are listed
-#   2  refusing to judge: ci/format-dirs.txt is missing, empty, or names a
-#      directory that does not exist. A gate with no roots is a vacuum gate.
+#   2  refusing to judge: no repository to judge, or ci/format-dirs.txt is
+#      missing, empty, or names a directory that does not exist. A gate with no
+#      roots is a vacuum gate.
 set -uo pipefail
 export LC_ALL=C
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO_ROOT="${REPO_ROOT:-${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel 2>/dev/null)}}"
+if [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT" ]; then
+    echo "FATAL: no repository to judge -- set REPO_ROOT, or run inside a checkout" >&2
+    exit 2
+fi
 cd "$REPO_ROOT" || exit 2
 
 DIRS_FILE="ci/format-dirs.txt"

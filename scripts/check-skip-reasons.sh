@@ -19,16 +19,23 @@
 # not pretend to. It stops the accident.
 #
 # Usage:
-#   ci/scripts/check-skip-reasons.sh
+#   REPO_ROOT=<consumer checkout> scripts/check-skip-reasons.sh
+#
+# The repository judged is REPO_ROOT, else $GITHUB_WORKSPACE, else the git
+# checkout around the current directory -- never the one this script lives in.
 #
 # Exit codes:
 #   0  every skip in a tracked source carries a reason
 #   1  at least one does not; each is printed as file:line
-#   2  refusing to judge (not in a git work tree)
+#   2  refusing to judge (no repository to judge, or not a git work tree)
 set -uo pipefail
 export LC_ALL=C
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO_ROOT="${REPO_ROOT:-${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel 2>/dev/null)}}"
+if [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT" ]; then
+    echo "FATAL: no repository to judge -- set REPO_ROOT, or run inside a checkout" >&2
+    exit 2
+fi
 cd "$REPO_ROOT" || exit 2
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 \

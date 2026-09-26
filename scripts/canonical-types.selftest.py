@@ -137,14 +137,24 @@ CASES = 0
 RED = 0
 
 
-def run_gate(ws, reg, repo=None):
+# The runner's own checkout must never leak in as the judged repository.
+BASE_ENV = {k: v for k, v in os.environ.items()
+            if k not in ("REPO_ROOT", "GITHUB_WORKSPACE", "GITHUB_REPOSITORY")}
+
+
+def run_gate(ws, reg, repo=None, env=None, cwd=None):
     # Every invocation is one case, and a non-zero return on a perturbed
-    # input is a case that proved the gate red.
+    # input is a case that proved the gate red. ws=None runs without
+    # --workspace: the checkout comes from the environment, as in CI.
     global CASES, RED
-    cmd = [sys.executable, GATE, "--workspace", ws, "--registry", reg]
+    cmd = [sys.executable, GATE, "--registry", reg]
+    if ws is not None:
+        cmd += ["--workspace", ws]
     if repo:
         cmd += ["--repo", repo]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          env=dict(BASE_ENV, **(env or {})),
+                          cwd=cwd or tempfile.gettempdir())
     CASES += 1
     if proc.returncode != 0:
         RED += 1
@@ -161,7 +171,8 @@ def main() -> int:
             print(f"FAIL  {case}  {detail}")
             failures.append(case)
 
-    root = tempfile.mkdtemp(prefix="canonical-types-selftest-")
+    root = tempfile.mkdtemp(prefix="canonical-types-selftest-",
+                            dir=os.environ.get("TMPDIR") or "/var/tmp")
     try:
         plain = registry(root, "plain", [
             ("Widget", CANON, "-"),
@@ -248,6 +259,29 @@ def main() -> int:
                        {"src/other.h": "#pragma once\n"})
         rc, out = run_gate(ws, unmarked)
         check("a ~mirror must still exist", rc == 1, f"rc={rc}\n{out}")
+
+        # Without --workspace: the one checkout the environment names, under
+        # the name the registry knows it by. A CI checkout need not sit in a
+        # directory named after its repository.
+        ws = workspace(root, "env", {"include/widget.h": CLEAN_HEADER},
+                       {"src/copy.h": SECOND_DECLARATION})
+        rc, out = run_gate(None, plain, env={"REPO_ROOT": os.path.join(ws, TWO)})
+        check("REPO_ROOT alone judges that checkout", rc == 1 and f"{TWO}/src/copy.h" in out,
+              f"rc={rc}\n{out}")
+        check("REPO_ROOT alone invents no MISSING", "MISSING" not in out, out)
+        renamed = os.path.join(root, "env", "checkout")
+        os.rename(os.path.join(ws, TWO), renamed)
+        rc, out = run_gate(None, plain, env={"GITHUB_WORKSPACE": renamed,
+                                             "GITHUB_REPOSITORY": f"LibreSCRS/{TWO}"})
+        check("GITHUB_REPOSITORY names a checkout in any directory",
+              rc == 1 and f"{TWO}/src/copy.h" in out, f"rc={rc}\n{out}")
+        rc, out = run_gate(None, plain, env={"REPO_ROOT": os.path.join(ws, ONE)})
+        check("the canonical checkout alone is clean", rc == 0, f"rc={rc}\n{out}")
+        nowhere = os.path.join(root, "nowhere")
+        os.makedirs(nowhere)
+        rc, out = run_gate(None, plain, env={"GIT_CEILING_DIRECTORIES": root}, cwd=nowhere)
+        check("no checkout at all exits 2", rc == 2 and "no repository to judge" in out,
+              f"rc={rc}\n{out}")
 
         broken = os.path.join(root, "not-a-repo")
         os.makedirs(os.path.join(broken, ONE, "include"))

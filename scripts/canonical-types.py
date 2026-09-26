@@ -52,13 +52,52 @@ class Fatal(Exception):
     """The gate could not measure.  Exit 2, never 0."""
 
 
-def default_workspace() -> str:
-    """Workspace root is the parent of the repo this script is checked into.
+def repo_root():
+    """The consumer's checkout: REPO_ROOT, else $GITHUB_WORKSPACE, else the git
+    checkout around the current directory; None when there is none. Never this
+    file's own location -- the gate lives in one repository and judges another."""
+    root = os.environ.get("REPO_ROOT") or os.environ.get("GITHUB_WORKSPACE")
+    if not root:
+        try:
+            out = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                                 capture_output=True, text=True, check=False)
+        except OSError:
+            return None
+        root = out.stdout.strip() if out.returncode == 0 else ""
+    return os.path.abspath(root) if root and os.path.isdir(root) else None
 
-    ``<workspace>/<Repo>/tools/canonical-types.py`` -- three levels up.  No
-    dependence on the caller's working directory, which is the whole point.
-    """
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+def checkouts(workspace_arg, repo_arg):
+    """{repository name: checkout path} for this run.
+
+    With --workspace, the side-by-side clones under it: every repository, or
+    only --repo. Without it, the one checkout being judged, under the name the
+    registry knows it by: --repo, else the repository part of
+    $GITHUB_REPOSITORY, else the checkout's directory name. A CI checkout
+    does not have to sit in a directory named after its repository, so the
+    directory name is the last resort, not the rule."""
+    if workspace_arg:
+        workspace = os.path.abspath(workspace_arg)
+        if repo_arg:
+            path = os.path.join(workspace, repo_arg)
+            if not os.path.isdir(path):
+                raise Fatal(f"no such checkout: {path}")
+            return {repo_arg: path}, {repo_arg}
+        return {r: os.path.join(workspace, r) for r in REPOS}, set(REPOS)
+    root = repo_root()
+    if root is None:
+        raise Fatal("no repository to judge -- set REPO_ROOT, pass --workspace, "
+                    "or run inside a checkout")
+    name = (repo_arg or os.environ.get("GITHUB_REPOSITORY", "").rpartition("/")[2]
+            or os.path.basename(root))
+    return {name: root}, {name}
+
+
+def locate(where, rel):
+    """A registry path (<repository>/<path>) on disk, or None."""
+    repo, _, rest = rel.partition("/")
+    base = where.get(repo)
+    return os.path.join(base, rest) if base else None
 
 
 def parse_registry(path: str):
@@ -104,7 +143,7 @@ def parse_registry(path: str):
     return rows
 
 
-def tracked_sources(workspace: str, repos):
+def tracked_sources(where):
     """``git ls-files`` per repo, and the return code is checked every time.
 
     The workspace root is a parent holding side-by-side clones, not a git
@@ -114,8 +153,7 @@ def tracked_sources(workspace: str, repos):
     prevent, so a non-zero return code is fatal rather than skipped.
     """
     found = []
-    for repo in repos:
-        repo_path = os.path.join(workspace, repo)
+    for repo, repo_path in where.items():
         if not os.path.isdir(repo_path):
             continue
         proc = subprocess.run(["git", "-C", repo_path, "ls-files"],
@@ -199,8 +237,10 @@ def declaration_sites(rows, files):
     return rows
 
 
-def has_mirror_mark(workspace: str, rel: str, canonical: str) -> bool:
-    path = os.path.join(workspace, rel)
+def has_mirror_mark(where, rel: str, canonical: str) -> bool:
+    path = locate(where, rel)
+    if path is None:
+        return False
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
@@ -215,30 +255,30 @@ def has_mirror_mark(workspace: str, rel: str, canonical: str) -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser(description="canonical declaration registry gate")
     ap.add_argument("--workspace", default=None,
-                    help="workspace root holding the side-by-side clones")
+                    help="workspace root holding the side-by-side clones; without "
+                         "it, the one checkout REPO_ROOT names is scanned")
     ap.add_argument("--repo", default=None,
-                    help="single-repo subset: only this checkout is scanned")
-    ap.add_argument("--registry", default=None, help="path to canonical-types.tsv")
+                    help="single-repo subset: only this checkout is scanned; "
+                         "without --workspace, the name the checkout is known by")
+    ap.add_argument("--registry", default=None,
+                    help="path to the registry (default: canonical-types.tsv "
+                         "beside this script -- the registry is shared data)")
     args = ap.parse_args()
 
-    workspace = os.path.abspath(args.workspace or default_workspace())
     registry = args.registry or os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                              "canonical-types.tsv")
     try:
         if not os.path.isfile(registry):
             raise Fatal(f"registry not found: {registry}")
         rows = parse_registry(registry)
-        repos = [args.repo] if args.repo else REPOS
-        if args.repo and not os.path.isdir(os.path.join(workspace, args.repo)):
-            raise Fatal(f"no such checkout: {os.path.join(workspace, args.repo)}")
-        files = tracked_sources(workspace, repos)
+        where, scanned = checkouts(args.workspace, args.repo)
+        files = tracked_sources(where)
     except Fatal as exc:
         print(f"FATAL  {exc}", file=sys.stderr)
         print("EXIT=2")
         return 2
 
     declaration_sites(rows, files)
-    scanned = {args.repo} if args.repo else set(repos)
 
     bad = 0
     registered = 0
@@ -263,18 +303,19 @@ def main() -> int:
         for mirror in mirrors:
             if mirror.split("/", 1)[0] not in scanned:
                 continue
-            if not os.path.isfile(os.path.join(workspace, mirror)):
+            if not os.path.isfile(locate(where, mirror) or ""):
                 print(f"MIRROR-GONE   {name}: registered mirror {mirror} does not exist")
                 bad += 1
                 continue
             if mirror in row["unmarked"]:
                 continue
-            if not has_mirror_mark(workspace, mirror, canon):
+            if not has_mirror_mark(where, mirror, canon):
                 print(f"MIRROR-UNMARKED {name}: {mirror} carries no "
                       f"'{MIRROR_MARK} {canon}' line")
                 bad += 1
 
-    scope = f"--repo {args.repo}" if args.repo else "all checkouts"
+    scope = ("all checkouts" if args.workspace and not args.repo
+             else "--repo " + ", ".join(sorted(scanned)))
     print(f"\n{registered} registered names, {bad} violations ({scope})")
     print(f"EXIT={1 if bad else 0}")
     return 1 if bad else 0

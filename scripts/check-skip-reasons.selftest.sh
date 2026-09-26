@@ -15,7 +15,14 @@
 #   8  an untracked file with a bare skip      -> 0  (only git ls-files counts)
 #   9  QSKIP("")                               -> 1
 #  10  a repository with no tracked sources    -> 2  (nothing scanned is not clean)
+#  11  GITHUB_WORKSPACE names a bare skip, cwd elsewhere -> 1 (the CI default)
+#  12  no REPO_ROOT, cwd inside that tree      -> 1  (the checkout around cwd)
+#  13  no REPO_ROOT, cwd outside every checkout -> 2 (nothing to judge)
+#
+# The gate is run from outside the fixture, never from a copy placed inside it:
+# it lives in one repository and judges another.
 set -uo pipefail
+unset REPO_ROOT GITHUB_WORKSPACE
 
 CHECK="$(cd "$(dirname "$0")" && pwd)/check-skip-reasons.sh"
 WORK="$(mktemp -d /var/tmp/skipreasons-selftest.XXXXXX)"
@@ -29,9 +36,7 @@ red=0
 make_repo() {
     local name="$1" body="$2"
     local root="$WORK/$name"
-    mkdir -p "$root/ci/scripts" "$root/test"
-    cp "$CHECK" "$root/ci/scripts/check-skip-reasons.sh"
-    chmod +x "$root/ci/scripts/check-skip-reasons.sh"
+    mkdir -p "$root/test"
     printf '%s\n' "$body" > "$root/test/a_test.cpp"
     git -C "$root" init -q
     git -C "$root" config user.email t@t
@@ -53,7 +58,7 @@ check() {
     fi
 }
 
-run() { bash "$1/ci/scripts/check-skip-reasons.sh" 2>&1; }
+run() { (cd "$WORK" && REPO_ROOT="$1" bash "$CHECK" 2>&1); }
 
 r="$(make_repo c1 'TEST(S, T) { GTEST_SKIP(); }')"
 out="$(run "$r")"; rc=$?; check 1 1 $rc
@@ -87,12 +92,19 @@ out="$(run "$r")"; rc=$?; check 9 1 $rc
 # case 10: a repository with no tracked C/C++ source at all. Nothing scanned
 # must read as "cannot judge", not as "clean": a filter that matches nothing is
 # the shape that makes a gate vacuous.
-r="$WORK/c10"; mkdir -p "$r/ci/scripts"
-cp "$CHECK" "$r/ci/scripts/check-skip-reasons.sh"; chmod +x "$r/ci/scripts/check-skip-reasons.sh"
+r="$WORK/c10"; mkdir -p "$r"
 echo readme > "$r/README.md"
 git -C "$r" init -q; git -C "$r" config user.email t@t; git -C "$r" config user.name t
 git -C "$r" add README.md; git -C "$r" -c commit.gpgsign=false commit -qm x
 out="$(run "$r")"; rc=$?; check 10 2 $rc
+
+# cases 11-13: where the root comes from
+r="$(make_repo c11 'TEST(S, T) { GTEST_SKIP(); }')"
+out="$(cd "$WORK" && GITHUB_WORKSPACE="$r" bash "$CHECK" 2>&1)"; rc=$?; check 11 1 $rc
+out="$(cd "$r/test" && bash "$CHECK" 2>&1)"; rc=$?; check 12 1 $rc
+mkdir -p "$WORK/nowhere"
+out="$(cd "$WORK/nowhere" && GIT_CEILING_DIRECTORIES="$WORK" bash "$CHECK" 2>&1)"; rc=$?; check 13 2 $rc
+case "$out" in *"no repository to judge"*) ;; *) echo "  case 13: FAIL — wrong message: $out"; fail=$((fail + 1)) ;; esac
 
 echo "selftest: $pass passed, $fail failed"
 printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"
