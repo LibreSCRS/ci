@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: pkg-build
+description: >
+  Build the calling repository's deb or rpm packages for one distribution slug,
+  inside that slug's container image from images.lock, after obtaining its
+  upstream LibreSCRS packages either by building them from the commits in
+  deps.lock (upstream=source) or by downloading them from the upstream
+  repositories' published release (upstream=release). Collects the packages as
+  release assets named <package>.<slug>.<deb|rpm>; refuses debug packages.
+
+inputs:
+  slug:
+    description: Distribution slug from images.lock (debian13, ubuntu2604, fedora43, fedora44, opensusetw).
+    required: true
+  upstream:
+    description: >
+      source  = check out every upstream in the deps.lock closure at its locked
+                commit and build it for the same slug first (CI, rehearsal);
+      release = download every upstream's '*.<slug>.<deb|rpm>' assets of
+                release `version` (tag builds; the upstream release must exist).
+    required: true
+    default: source
+  version:
+    description: Upstream release to download from (upstream=release only), e.g. 5.0.0.
+    required: false
+    default: ''
+  repo:
+    description: Path of the calling repository's checkout.
+    required: false
+    default: ${{ github.workspace }}
+  name:
+    description: Repository name the packages are built for (default the repository part of github.repository).
+    required: false
+    default: ''
+  refs:
+    description: >
+      upstream=source only: space-separated NAME=REF overrides of deps.lock
+      (e.g. "LibreMiddleware=main LibreAgent=main" for the head-of-main canary).
+    required: false
+    default: ''
+  art:
+    description: Artefact root shared by consecutive builds in one job (upstream packages are reused from it).
+    required: false
+    default: ''
+  dist:
+    description: Directory that receives this repository's packages as release assets.
+    required: false
+    default: ''
+  jobs:
+    description: Build parallelism inside the container.
+    required: false
+    default: '4'
+
+outputs:
+  dist:
+    description: Directory holding <package>.<slug>.<deb|rpm> for this repository.
+    value: ${{ steps.build.outputs.dist }}
+  art:
+    description: Artefact root (upstream and own packages under <slug>/<Repository>/<family>).
+    value: ${{ steps.build.outputs.art }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build ${{ inputs.slug }} packages (upstream=${{ inputs.upstream }})
+      id: build
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        IN_SLUG: ${{ inputs.slug }}
+        IN_UPSTREAM: ${{ inputs.upstream }}
+        IN_VERSION: ${{ inputs.version }}
+        IN_REPO: ${{ inputs.repo }}
+        IN_NAME: ${{ inputs.name }}
+        IN_REFS: ${{ inputs.refs }}
+        IN_ART: ${{ inputs.art }}
+        IN_DIST: ${{ inputs.dist }}
+        PKG_JOBS: ${{ inputs.jobs }}
+        GH_REPOSITORY: ${{ github.repository }}
+      run: |
+        set -uo pipefail
+        name="${IN_NAME:-${GH_REPOSITORY#*/}}"
+        art="${IN_ART:-$RUNNER_TEMP/librescrs-packages}"
+        dist="${IN_DIST:-$RUNNER_TEMP/librescrs-dist/$IN_SLUG}"
+        git config --global --add safe.directory "$IN_REPO"
+        args=(build --slug "$IN_SLUG" --art "$art" --upstream "$IN_UPSTREAM" \
+              --root "$IN_REPO" --name "$name" --dist "$dist")
+        [ -z "$IN_VERSION" ] || args+=(--version "$IN_VERSION")
+        for r in $IN_REFS; do args+=(--ref "$r"); done
+        echo "art=$art" >>"$GITHUB_OUTPUT"
+        echo "dist=$dist" >>"$GITHUB_OUTPUT"
+        rc=0
+        "$GITHUB_ACTION_PATH/../../scripts/pkg-chain.sh" "${args[@]}" || rc=$?
+        echo "PKG_BUILD_RC=$rc"
+        exit "$rc"
