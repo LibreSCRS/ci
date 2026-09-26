@@ -65,7 +65,7 @@ unj() { echo "CANNOT JUDGE: $*"; UNJ=1; }
 ok() { echo "ok: $*"; }
 finish() { [ "$RED" = 1 ] && exit 1; [ "$UNJ" = 1 ] && exit 2; exit 0; }
 
-TMPROOT="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/var/tmp}}/bump-deps.XXXXXX")" \
+TMPROOT="$(mktemp -d "${RUNNER_TEMP:-/var/tmp}/bump-deps.XXXXXX")" \
     || die2 "cannot create a temporary directory"
 trap 'rm -rf "$TMPROOT"' EXIT
 

@@ -71,7 +71,7 @@ else
     die2 "give exactly one of --la-src DIR or --la-repo GITDIR --rev SHA"
 fi
 
-work="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/var/tmp}}/lmac-contract.XXXXXX")" \
+work="$(mktemp -d "${RUNNER_TEMP:-/var/tmp}/lmac-contract.XXXXXX")" \
     || die2 "cannot create a temporary directory"
 trap 'rm -rf "$work"' EXIT
 

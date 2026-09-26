@@ -14,7 +14,7 @@ unset REPO_ROOT GITHUB_WORKSPACE GITHUB_REPOSITORY
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INV="$here/gates-inventory.py"
 python3 -c 'import yaml' 2>/dev/null || { echo "FATAL: python3 cannot import yaml -- cannot judge" >&2; exit 2; }
-T="$(mktemp -d "${TMPDIR:-/var/tmp}/gates-inventory-selftest.XXXXXX")" || exit 2
+T="$(mktemp -d "/var/tmp/gates-inventory-selftest.XXXXXX")" || exit 2
 trap 'rm -rf "$T"' EXIT
 out="$T/out"
 fails=0

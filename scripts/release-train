@@ -434,7 +434,7 @@ tag_layer() {
         GITHUB_REPOSITORY="$(slug "$r")" REPO_ROOT="$ROOT/$r" \
             bash "$here/check-release-assets.sh" --published-strict "$V" \
             || die "$r: the published release $V is not the declared set"
-        tmp="$(mktemp -d "${TMPDIR:-/var/tmp}/release-train-dl.XXXXXX")"
+        tmp="$(mktemp -d "/var/tmp/release-train-dl.XXXXXX")"
         if ! gh release download "$V" -R "$(slug "$r")" -D "$tmp" >/dev/null 2>&1 \
                 && [ -n "$(gh release view "$V" -R "$(slug "$r")" --json assets \
                             | json "' '.join(a['name'] for a in d['assets'])")" ]; then

@@ -22,7 +22,7 @@ subject="$here/check-version.sh"
 GATE="$subject"
 [ -f "$subject" ] || { echo "missing subject: $subject" >&2; exit 2; }
 
-work=$(mktemp -d "${TMPDIR:-/var/tmp}/check-version-selftest.XXXXXX") || exit 2
+work=$(mktemp -d "/var/tmp/check-version-selftest.XXXXXX") || exit 2
 WORK="$work"
 trap 'rm -rf "$work"' EXIT
 fails=0

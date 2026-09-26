@@ -14,7 +14,7 @@
 # red per repository. The answers to the train's questions come from a file.
 #
 # The world lives under /var/tmp/ci-kapije/rt-selftest-* when that directory
-# exists (the maintainer machine: /tmp is RAM there), else under $TMPDIR.
+# exists (the maintainer machine: /tmp is RAM there), else under /var/tmp.
 set -u
 
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"

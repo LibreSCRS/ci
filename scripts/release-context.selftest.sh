@@ -8,7 +8,7 @@ set -u
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 subject="$here/release-context.sh"
 [ -f "$subject" ] || { echo "missing subject: $subject" >&2; exit 2; }
-work="$(mktemp -d "${TMPDIR:-/var/tmp}/release-context-selftest.XXXXXX")" || exit 2
+work="$(mktemp -d "/var/tmp/release-context-selftest.XXXXXX")" || exit 2
 trap 'rm -rf "$work"' EXIT
 
 cases=0; red=0; fails=0

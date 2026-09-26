@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
+# selftest-platforms: linux
 # shellcheck disable=SC1003,SC1007,SC2010,SC2012,SC2015,SC2016,SC2028,SC2181  # fixture text is literal on purpose; A && B || C report lines
 # Selftest for check-tarball-determinism.sh. Six ways to build a tarball that
 # is a fact about the machine rather than about the commit, plus the unmodified
@@ -43,7 +44,7 @@ maker="$here/fixtures/make-source-tarball.sh"
 [ -f "$maker" ]   || { echo "missing $maker" >&2; exit 2; }
 name=LibreLinux
 
-work=$(mktemp -d "${TMPDIR:-/var/tmp}/tarball-determinism-selftest.XXXXXX") || exit 2
+work=$(mktemp -d "/var/tmp/tarball-determinism-selftest.XXXXXX") || exit 2
 trap 'rm -rf "$work"' EXIT
 
 # GNU tar and sha256sum under their Linux names, whatever the host.

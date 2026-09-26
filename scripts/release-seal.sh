@@ -90,7 +90,7 @@ keyless_verify() {  # keyless_verify <file> <identity> -> cosign's verdict
         --certificate-identity "$2" --certificate-oidc-issuer "$ISSUER" >/dev/null 2>&1
 }
 
-work="$(mktemp -d "${TMPDIR:-/var/tmp}/release-seal.XXXXXX")" || cannot "mktemp failed"
+work="$(mktemp -d "/var/tmp/release-seal.XXXXXX")" || cannot "mktemp failed"
 trap 'rm -rf "$work"' EXIT
 
 bad=0

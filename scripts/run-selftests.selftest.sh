@@ -15,7 +15,7 @@ unset REPO_ROOT GITHUB_WORKSPACE
 
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 R="$here/run-selftests.sh"
-T="$(mktemp -d "${TMPDIR:-/var/tmp}/rcs-selftest.XXXXXX")" || exit 2
+T="$(mktemp -d "/var/tmp/rcs-selftest.XXXXXX")" || exit 2
 trap 'rm -rf "$T"' EXIT
 out="$T/out"
 fails=0
@@ -92,6 +92,23 @@ expect "12 no root, and the runner itself is not in a checkout" 2 \
     "$( (cd "$T" && GIT_CEILING_DIRECTORIES="$T" bash "$T/loose/run-selftests.sh") >"$out" 2>&1; echo $?)" \
     "is not a git checkout"
 expect "13 an unknown argument" 2 "$(run --root "$d" --bogus)" "usage"
+
+# A self-test declared for another platform is not run here, says so, and
+# leaves the total; one declared for this platform runs. Its body is a failure,
+# so a runner that ignored the declaration would go red (the red proof).
+plat="$(uname -s | tr '[:upper:]' '[:lower:]')"
+OTHER='#!/usr/bin/env bash
+# selftest-platforms: plan9
+exit 1'
+HERE="#!/usr/bin/env bash
+# selftest-platforms: plan9 $plat
+echo \"selftest: 3 cases, 2 red-proved\""
+d=$(consumer c14 "ci/scripts/o.selftest.sh=$OTHER" "ci/scripts/h.selftest.sh=$HERE")
+expect "14 a self-test declared for another platform is skipped, visibly" 0 "$(run --root "$d")" \
+    "skip  ci/scripts/o.selftest.sh" "declared for: plan9" "1 selftests, 3 cases, 2 red-proved, 1 not for $plat"
+d=$(consumer c15 "ci/scripts/o.selftest.sh=${OTHER/plan9/plan9 $plat}")
+expect "15 declared for this platform too: it runs, and its failure counts" 1 "$(run --root "$d")" \
+    "FAIL  ci/scripts/o.selftest.sh"
 
 [ "$fails" = 0 ] && echo "run-selftests selftest: all cases behave" \
     || echo "run-selftests selftest: FAILED"

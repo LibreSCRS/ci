@@ -13,7 +13,7 @@ here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BD="$here/bump-deps"
 unset REPO_ROOT GITHUB_WORKSPACE GITHUB_REPOSITORY
 
-T="$(mktemp -d "${TMPDIR:-/var/tmp}/bd-selftest-XXXXXX")" || { echo "cannot create temp dir" >&2; exit 2; }
+T="$(mktemp -d "/var/tmp/bd-selftest-XXXXXX")" || { echo "cannot create temp dir" >&2; exit 2; }
 trap 'rm -rf "$T"' EXIT
 export BUMP_DEPS_URL_BASE="file://$T/remotes"
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$T/gitconfig"

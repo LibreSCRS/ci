@@ -21,7 +21,7 @@ if [ ! -f "$subject" ]; then
     exit 1
 fi
 
-work="$(mktemp -d "${TMPDIR:-/var/tmp}/check-release-assets.XXXXXX")" || exit 2
+work="$(mktemp -d "/var/tmp/check-release-assets.XXXXXX")" || exit 2
 trap 'rm -rf "$work"' EXIT
 
 cases=0

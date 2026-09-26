@@ -95,7 +95,7 @@ while IFS= read -r tool; do
         || { echo "FATAL: $tool is not on PATH -- cannot run the self-tests that need it" >&2; exit 2; }
 done < <(printf '%s\n' "${interp[@]}" | sort -u)
 
-work="$(mktemp -d "${TMPDIR:-/var/tmp}/run-selftests.XXXXXX")" \
+work="$(mktemp -d "/var/tmp/run-selftests.XXXXXX")" \
     || { echo "FATAL: cannot create a temporary directory -- cannot measure" >&2; exit 2; }
 trap 'rm -rf "$work"' EXIT
 out="$work/out"
@@ -105,8 +105,23 @@ sum_cases=0
 sum_red=0
 failed=0
 unjudged=0
+skipped=0
+
+# A self-test may declare, as data in its first lines, the platforms its gate
+# runs on:   # selftest-platforms: linux
+# Elsewhere it is not run, and it says so on its own line and in the total --
+# a gate built for Linux tarballs is not judged by a macOS filesystem, whose
+# readdir() order hides the very defect it looks for. No declaration: every
+# platform. The other leg of the same CI runs it, so nothing goes unjudged.
+platform="$(uname -s | tr '[:upper:]' '[:lower:]')"
 
 for t in "${tests[@]}"; do
+    decl="$(head -n 15 "$t" | sed -n 's/^# selftest-platforms: *//p' | head -n 1)"
+    if [ -n "$decl" ] && [[ " $decl " != *" $platform "* ]]; then
+        printf 'skip  %-58s declared for: %s\n' "$t" "$decl"
+        skipped=$((skipped + 1))
+        continue
+    fi
     # The status is taken from the `if` itself. Reading $? after a `case` is how
     # the barrier's counter came to report N/N while a self-test was failing.
     # stdout and stderr stay apart: the trailer is the last line of STDOUT, and
@@ -151,8 +166,9 @@ for t in "${tests[@]}"; do
     printf 'ok    %-58s %s cases, %s red-proved\n' "$t" "$n" "$r"
 done
 
-printf 'run-selftests: %s selftests, %s cases, %s red-proved\n' \
-    "${#tests[@]}" "$sum_cases" "$sum_red"
+printf 'run-selftests: %s selftests, %s cases, %s red-proved%s\n' \
+    "$(( ${#tests[@]} - skipped ))" "$sum_cases" "$sum_red" \
+    "$([ "$skipped" = 0 ] || printf ', %s not for %s' "$skipped" "$platform")"
 
 [ "$failed" = 0 ] || exit 1
 [ "$unjudged" = 0 ] || exit 2

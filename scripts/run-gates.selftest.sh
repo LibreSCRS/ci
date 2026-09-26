@@ -15,7 +15,7 @@ unset REPO_ROOT GITHUB_WORKSPACE GITHUB_REPOSITORY GITHUB_ACTIONS BUILD_DIR
 
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 RG="$here/run-gates.py"
-T="$(mktemp -d "${TMPDIR:-/var/tmp}/run-gates-selftest.XXXXXX")" || exit 2
+T="$(mktemp -d "/var/tmp/run-gates-selftest.XXXXXX")" || exit 2
 trap 'rm -rf "$T"' EXIT
 out="$T/out"
 fails=0

@@ -8,7 +8,7 @@ here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 RG="$here/lmac-contract-regen.sh"
 unset REPO_ROOT GITHUB_WORKSPACE
 
-T="$(mktemp -d "${TMPDIR:-/var/tmp}/lcr-selftest-XXXXXX")" || { echo "cannot create temp dir" >&2; exit 2; }
+T="$(mktemp -d "/var/tmp/lcr-selftest-XXXXXX")" || { echo "cannot create temp dir" >&2; exit 2; }
 trap 'rm -rf "$T"' EXIT
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$T/gitconfig"
 git config --global user.name Selftest

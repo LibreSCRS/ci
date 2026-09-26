@@ -17,7 +17,7 @@
 # to LibreSCRS/ci pins one full commit (F), the rules combine into one exit
 # code (G), and the root comes from the environment, never the script (H).
 #
-# Fixtures are throw-away git checkouts under ${TMPDIR:-/var/tmp}.
+# Fixtures are throw-away git checkouts under /var/tmp.
 set -uo pipefail
 unset REPO_ROOT GITHUB_WORKSPACE GITHUB_REPOSITORY
 
@@ -29,7 +29,7 @@ FIXTURES="$repo/fixtures/check-workflows"
 command -v python3 >/dev/null 2>&1 || { echo "FATAL: python3 is not on PATH" >&2; exit 2; }
 python3 -c 'import yaml' 2>/dev/null || { echo "FATAL: python3 cannot import yaml -- cannot judge" >&2; exit 2; }
 
-T="$(mktemp -d "${TMPDIR:-/var/tmp}/check-workflows-selftest.XXXXXX")" || exit 2
+T="$(mktemp -d "/var/tmp/check-workflows-selftest.XXXXXX")" || exit 2
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/no-profiles" "$T/timeouts" "$T/order"
 fails=0

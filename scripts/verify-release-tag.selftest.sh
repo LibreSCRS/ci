@@ -24,7 +24,7 @@ subject="$here/verify-release-tag.sh"
 [ -f "$subject" ] || { echo "missing subject: $subject" >&2; exit 2; }
 command -v gpg >/dev/null 2>&1 || { echo "gpg is not on PATH -- cannot run" >&2; exit 2; }
 
-work="$(mktemp -d "${TMPDIR:-/var/tmp}/verify-release-tag-selftest.XXXXXX")" || exit 2
+work="$(mktemp -d "/var/tmp/verify-release-tag-selftest.XXXXXX")" || exit 2
 cleanup() {
     for k in rel forger; do GNUPGHOME="$work/$k" gpgconf --kill all >/dev/null 2>&1 || true; done
     rm -rf "$work"
