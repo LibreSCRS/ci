@@ -1,0 +1,153 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: Release publish
+description: >
+  The release notes from the CHANGELOG, the staged asset set held to the
+  repository's declaration, and then -- on a tag -- `gh release create` and the
+  published release read back; in a rehearsal, the staged set kept as a
+  workflow artefact and the same read-back run over a listing synthesized from
+  it.
+
+# Contract. The caller's job checks its repository out into `repo-root` (the
+# CHANGELOG and ci/release-assets.txt are read there) and, when it publishes
+# assets, downloads the sealed directory into `artifacts`. Linux runner; the
+# job carries the timeout. Permissions: contents: write on a tag (read is
+# enough for a rehearsal, which creates nothing).
+inputs:
+  mode:
+    description: rehearse | publish -- the preflight job's `mode` output.
+    required: true
+  version:
+    description: The preflight job's `version` output.
+    required: true
+  is_prerelease:
+    description: The preflight job's `is_prerelease` output.
+    required: true
+  artifacts:
+    description: >
+      The sealed asset directory. Empty for a repository that publishes notes
+      only; its ci/release-assets.txt must then declare no glob.
+    required: false
+    default: artifacts
+  repo-root:
+    description: The consumer's checkout.
+    required: false
+    default: ${{ github.workspace }}
+
+runs:
+  using: composite
+  steps:
+    - name: This run may publish in this mode, for this version
+      id: ctx
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        WANT: ${{ inputs.version }}
+        REPO_ROOT: ${{ inputs.repo-root }}
+      run: |
+        set -euo pipefail
+        out="$("$GITHUB_ACTION_PATH/../../scripts/release-context.sh" "$MODE")"
+        got="$(printf '%s\n' "$out" | sed -n 's/^version=//p')"
+        if [ "$got" != "$WANT" ]; then
+          echo "::error::the preflight said version '$WANT', this job derives '$got' -- the jobs disagree about what is released"
+          exit 1
+        fi
+        printf '%s\n' "$out" >> "$GITHUB_OUTPUT"
+
+    - name: Release notes from the CHANGELOG
+      shell: bash
+      env:
+        REPO_ROOT: ${{ inputs.repo-root }}
+        VERSION: ${{ inputs.version }}
+        PRE: ${{ inputs.is_prerelease }}
+      run: |
+        set -uo pipefail
+        notes="$RUNNER_TEMP/release-notes.md"
+        if "$GITHUB_ACTION_PATH/../../scripts/check-version.sh" --section "$VERSION" > "$notes"; then
+          echo "NOTES_ARGS=--notes-file $notes" >> "$GITHUB_ENV"
+          echo "release notes: $(wc -c < "$notes") bytes from the CHANGELOG section for $VERSION"
+          sed 's/^/  | /' "$notes"
+        elif [ "$PRE" = true ]; then
+          echo "::notice::no CHANGELOG section for pre-release $VERSION -- generated notes"
+          echo "NOTES_ARGS=--generate-notes" >> "$GITHUB_ENV"
+        else
+          echo "::error::no CHANGELOG section for $VERSION -- a final release does not ship generated notes"
+          exit 1
+        fi
+
+    - name: The staged asset set is the set this repository declares
+      shell: bash
+      env:
+        REPO_ROOT: ${{ inputs.repo-root }}
+        ARTIFACTS: ${{ inputs.artifacts }}
+      run: |
+        set -uo pipefail
+        if [ -n "$ARTIFACTS" ]; then
+          "$GITHUB_ACTION_PATH/../../scripts/check-release-assets.sh" --staged "$ARTIFACTS"
+        else
+          "$GITHUB_ACTION_PATH/../../scripts/check-release-assets.sh" --staged
+        fi
+
+    - name: Create the GitHub release
+      if: inputs.mode == 'publish'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ steps.ctx.outputs.tag }}
+        PRE: ${{ inputs.is_prerelease }}
+        ARTIFACTS: ${{ inputs.artifacts }}
+      run: |
+        set -euo pipefail
+        # The ref and repository travel through the environment, never inline:
+        # a git ref may carry shell metacharacters. --verify-tag refuses to
+        # invent a tag. --repo because the workspace root may hold no .git.
+        args=(--repo "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag)
+        read -r -a notes <<< "$NOTES_ARGS"
+        args+=("${notes[@]}")
+        [ "$PRE" = true ] && args+=(--prerelease)
+        files=()
+        if [ -n "$ARTIFACTS" ]; then
+          shopt -s nullglob
+          files=("$ARTIFACTS"/*)
+        fi
+        gh release create "$TAG" "${args[@]}" "${files[@]}"
+
+    - name: The published release is the set this repository declares
+      if: inputs.mode == 'publish'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ steps.ctx.outputs.tag }}
+        REPO_ROOT: ${{ inputs.repo-root }}
+      run: '"$GITHUB_ACTION_PATH/../../scripts/check-release-assets.sh" --published-strict "$TAG"'
+
+    - name: Keep the rehearsed asset set
+      if: inputs.mode == 'rehearse' && inputs.artifacts != ''
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      with:
+        name: release-rehearsal
+        path: ${{ inputs.artifacts }}
+        retention-days: 3
+        if-no-files-found: error
+
+    - name: The rehearsed release is the set this repository declares
+      if: inputs.mode == 'rehearse'
+      shell: bash
+      env:
+        REPO_ROOT: ${{ inputs.repo-root }}
+        ARTIFACTS: ${{ inputs.artifacts }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        # The same read-back the tag runs, over the listing gh would print for
+        # a release carrying exactly the staged files. Not evidence about a
+        # published release -- there is none -- but the same code over the
+        # same names.
+        listing="$RUNNER_TEMP/rehearsal-assets.json"
+        python3 - "$ARTIFACTS" > "$listing" <<'PY'
+        import json, os, sys
+        d = sys.argv[1]
+        names = sorted(os.listdir(d)) if d else []
+        print(json.dumps({"isDraft": False, "assets": [{"name": n} for n in names]}))
+        PY
+        echo "::notice::rehearsal -- the published-set check runs over a synthesized listing"
+        GH_ASSETS_JSON="$listing" "$GITHUB_ACTION_PATH/../../scripts/check-release-assets.sh" --published-strict "$VERSION"

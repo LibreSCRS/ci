@@ -1,0 +1,122 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: Release preflight
+description: >
+  Everything a release can be refused for, before anything is built or signed:
+  the run's mode against its ref, the tag's signature (or, on a branch, the
+  verifier proved both ways on fixtures), the version agreement, and the
+  cross-repository pins. Outputs the version every later job uses.
+
+# Contract. The caller's job checks its own repository out (actions/checkout,
+# fetch-depth 0 or at least the tag) into `repo-root`, runs on Linux, and gives
+# the job a timeout: steps of a composite action carry none of their own.
+# Permissions: contents: read.
+inputs:
+  mode:
+    description: >
+      rehearse | publish. A tag push passes `publish` (write it as
+      `inputs.mode || 'publish'`); a dispatch passes its input. `publish` on a
+      ref that is not a tag fails here.
+    required: true
+  repo-root:
+    description: The consumer's checkout.
+    required: false
+    default: ${{ github.workspace }}
+  version-arms:
+    description: >
+      check-version arms this repository runs (comma-separated). On a
+      pre-release tag the lockstep arm is not applied: a pre-release publishes
+      ahead of its CHANGELOG section.
+    required: false
+    default: lockstep,floors,stamp,surfaces
+  version-min:
+    description: check-version --min (the floors this repository is known to carry).
+    required: false
+    default: '0'
+
+outputs:
+  mode:
+    description: rehearse | publish, as validated.
+    value: ${{ steps.ctx.outputs.mode }}
+  version:
+    description: The version this run releases (the tag's, or VERSION's on a branch).
+    value: ${{ steps.ctx.outputs.version }}
+  tag:
+    description: The tag name on a tag ref, empty otherwise.
+    value: ${{ steps.ctx.outputs.tag }}
+  is_prerelease:
+    description: true for -rc/-beta/-alpha/-pre, false otherwise.
+    value: ${{ steps.ctx.outputs.is_prerelease }}
+
+runs:
+  using: composite
+  steps:
+    - name: Mode and version of this run
+      id: ctx
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        REPO_ROOT: ${{ inputs.repo-root }}
+      run: |
+        set -euo pipefail
+        out="$("$GITHUB_ACTION_PATH/../../scripts/release-context.sh" "$MODE")"
+        printf '%s\n' "$out" | tee -a "$GITHUB_OUTPUT"
+
+    - name: The tag is signed by the LibreSCRS release key
+      if: steps.ctx.outputs.tag != ''
+      shell: bash
+      env:
+        TAG: ${{ steps.ctx.outputs.tag }}
+        REPO_ROOT: ${{ inputs.repo-root }}
+      run: |
+        set -euo pipefail
+        # The annotated tag OBJECT, whatever depth the checkout fetched.
+        git -C "$REPO_ROOT" fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
+        "$GITHUB_ACTION_PATH/../../scripts/verify-release-tag.sh" tag "$TAG"
+
+    - name: The tag verifier accepts a real release tag and rejects forgeries
+      if: inputs.mode == 'rehearse'
+      shell: bash
+      env:
+        REPO_ROOT: ${{ inputs.repo-root }}
+      run: '"$GITHUB_ACTION_PATH/../../scripts/verify-release-tag.sh" rehearse'
+
+    - name: Every version surface agrees with the release
+      shell: bash
+      env:
+        REPO_ROOT: ${{ inputs.repo-root }}
+        VERSION: ${{ steps.ctx.outputs.version }}
+        PRE: ${{ steps.ctx.outputs.is_prerelease }}
+        VERSION_ARMS: ${{ inputs.version-arms }}
+        MIN: ${{ inputs.version-min }}
+      run: |
+        set -euo pipefail
+        arms="$VERSION_ARMS"
+        if [ "$PRE" = true ]; then
+          arms="$(printf '%s' "$VERSION_ARMS" | tr ',' '\n' | grep -vx lockstep | paste -sd, - || true)"
+          echo "pre-release $VERSION -- the lockstep arm is not applied"
+        fi
+        if [ -z "$arms" ]; then
+          echo "::notice::no check-version arm left to run for $VERSION"
+          exit 0
+        fi
+        "$GITHUB_ACTION_PATH/../../scripts/check-version.sh" --version "$VERSION" --arms "$arms" --min "$MIN"
+
+    - name: Cross-repository pins agree (and, on a tag, name the upstream tags)
+      shell: bash
+      env:
+        REPO_ROOT: ${{ inputs.repo-root }}
+        VERSION: ${{ steps.ctx.outputs.version }}
+        TAG: ${{ steps.ctx.outputs.tag }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -uo pipefail
+        tool="$GITHUB_ACTION_PATH/../../scripts/bump-deps"
+        if [ ! -f "$tool" ]; then
+          echo "::error::scripts/bump-deps is not in this checkout of the shared gates -- the pins cannot be judged (rc=2)"
+          exit 2
+        fi
+        if [ -n "$TAG" ]; then
+          "$tool" check --tag "$VERSION"
+        else
+          "$tool" check
+        fi

@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: Release seal
+description: >
+  SHA256SUMS over the release's asset directory, one cosign bundle per file,
+  and every one verified in the same step. On a tag: keyless signatures
+  checked against this run's exact identity, and a build provenance
+  attestation, verified back. In a rehearsal: an ephemeral key with no
+  transparency log (nothing is uploaded anywhere), plus the keyless and
+  attestation VERIFY paths proved both ways against releases that exist.
+
+# Contract. The caller's job downloads its build artefacts into `artifacts`
+# itself (a visible actions/download-artifact step, so the workflow's artefact
+# gate can see the consumer), then calls this, then uploads the sealed
+# directory for the publish job. Linux runner; the job carries the timeout.
+# Permissions: contents: read, id-token: write, attestations: write (the last
+# two are used on a tag only).
+inputs:
+  mode:
+    description: rehearse | publish -- the preflight job's `mode` output.
+    required: true
+  version:
+    description: The preflight job's `version` output.
+    required: true
+  artifacts:
+    description: The directory holding exactly the files to be released.
+    required: false
+    default: artifacts
+
+runs:
+  using: composite
+  steps:
+    - name: This run may seal in this mode, for this version
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        WANT: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        out="$("$GITHUB_ACTION_PATH/../../scripts/release-context.sh" "$MODE")"
+        got="$(printf '%s\n' "$out" | sed -n 's/^version=//p')"
+        if [ "$got" != "$WANT" ]; then
+          echo "::error::the preflight said version '$WANT', this job derives '$got' -- the jobs disagree about what is released"
+          exit 1
+        fi
+
+    - name: Install cosign
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+      with:
+        cosign-release: v3.0.6
+
+    - name: Checksum, sign and verify every asset
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        ARTIFACTS: ${{ inputs.artifacts }}
+      run: '"$GITHUB_ACTION_PATH/../../scripts/release-seal.sh" seal "$MODE" "$ARTIFACTS"'
+
+    - name: Build provenance for every asset in SHA256SUMS
+      if: inputs.mode == 'publish'
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+      with:
+        subject-checksums: ${{ inputs.artifacts }}/SHA256SUMS
+
+    - name: The provenance verifies for this repository, workflow and tag
+      if: inputs.mode == 'publish'
+      shell: bash
+      env:
+        ARTIFACTS: ${{ inputs.artifacts }}
+        GH_TOKEN: ${{ github.token }}
+      run: '"$GITHUB_ACTION_PATH/../../scripts/release-seal.sh" attest-verify "$ARTIFACTS"'
+
+    - name: Keyless verification, proved both ways on published releases
+      if: inputs.mode == 'rehearse'
+      shell: bash
+      env:
+        RELEASE_VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ github.token }}
+      run: '"$GITHUB_ACTION_PATH/../../scripts/release-seal.sh" fixture-keyless'
+
+    - name: Attestation verification, proved both ways on a public attested artefact
+      if: inputs.mode == 'rehearse'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: '"$GITHUB_ACTION_PATH/../../scripts/release-seal.sh" fixture-attest'
