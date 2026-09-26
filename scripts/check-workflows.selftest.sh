@@ -475,6 +475,41 @@ YML
 run "$T/order/scratch" "$T/order/scratch/.github/workflows/t.yml"
 judge 1 "a row checkout-deps was not asked for is not provided" $? "reads 'up/LibreMiddleware'"
 
+# LibreMac locks LibreDarwin too (it bundles the agent LibreDarwin builds), so
+# with no names: every row -- LibreDarwin included -- is provided.
+mk_wf t.yml <<'YML'
+on: [push]
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: LibreSCRS/ci/actions/checkout-deps@0123456789012345678901234567890123456789
+        with:
+          path: up
+      - name: reads the LibreDarwin row
+        working-directory: up/LibreDarwin
+        run: echo hi
+YML
+run "$T/order/scratch" "$T/order/scratch/.github/workflows/t.yml"
+judge 0 "checkout-deps with no names provides the LibreDarwin row" $?
+
+mk_wf t.yml <<'YML'
+on: [push]
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: LibreSCRS/ci/actions/checkout-deps@0123456789012345678901234567890123456789
+        with:
+          path: up
+          names: LibreAgent
+      - name: reads LibreDarwin it was not asked for
+        working-directory: up/LibreDarwin
+        run: echo hi
+YML
+run "$T/order/scratch" "$T/order/scratch/.github/workflows/t.yml"
+judge 1 "a LibreDarwin row checkout-deps was not asked for is not provided" $? "reads 'up/LibreDarwin'"
+
 # --- case 6: a local action before the checkout ----------------------------
 mk_wf t.yml <<'YML'
 on: [push]

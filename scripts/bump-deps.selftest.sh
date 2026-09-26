@@ -113,6 +113,9 @@ assert "LibreMac contract regenerated from LibreAgent in the same commit" -- \
     bash -c "cmp -s '$WS/LibreMac/$CONTRACT/wire-vocabulary.json' '$T/seed/LibreAgent/wire/wire-vocabulary.json' \
         && grep -qx 'max-sequential-ms 300000' '$WS/LibreMac/$CONTRACT/prompt-policy.txt' \
         && git -C '$WS/LibreMac' show --stat HEAD | grep -q prompt-policy.txt"
+assert "LibreMac locks the LibreDarwin commit to-head just made, in one commit with LibreAgent" -- \
+    bash -c "test '$(lock_sha LibreMac LibreDarwin)' = '$(git -C "$WS/LibreDarwin" rev-parse HEAD)' \
+        && git -C '$WS/LibreMac' log -1 --format=%s | grep -q '^build: track LibreAgent [0-9a-f]\{12\}, LibreDarwin [0-9a-f]\{12\}$'"
 expect 1 "check: a lock naming an unpushed bump is not reachable upstream" 'RED: LibreLinux: LibreAgent [0-9a-f]+ is not reachable' -- "$BD" check --workspace "$WS"
 assert "push wave lands" -- push_all
 expect 0 "check: green after the push wave" -- "$BD" check --workspace "$WS"
@@ -205,6 +208,14 @@ setsha LibreLinux LibreAgent "$la_root"
 expect 2 "LibreLinux on a LibreAgent without deps.lock: the diamond cannot be judged" \
     'LibreAgent [0-9a-f]+ has no deps.lock' -- "$BD" check --root "$WS/LibreLinux"
 restore LibreLinux
+setsha LibreMac LibreAgent "$old_la"
+expect 1 "diamond: LibreMac's LibreAgent is not the one its LibreDarwin builds" \
+    'RED: LibreMac: diamond -- LibreMac locks LibreAgent [0-9a-f]+ but its LibreDarwin [0-9a-f]+ builds LibreAgent' -- \
+    "$BD" check --root "$WS/LibreMac"
+restore LibreMac
+expect 0 "resolve: LibreMac asks for LibreAgent and LibreDarwin" -- "$BD" resolve --root "$WS/LibreMac"
+assert "resolve prints LibreMac's LibreDarwin row" -- \
+    grep -qx "libredarwin-sha=$(lock_sha LibreMac LibreDarwin)" "$T/out"
 
 # ---------------------------------------------------- checkout != lock
 lock_la="$(lock_sha LibreCelik LibreAgent)"
