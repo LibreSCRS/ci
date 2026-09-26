@@ -6,3 +6,6 @@ check-workflows
 selftests
 # The locked upstream revisions (deps.lock): format, reachability, diamond
 deps-lock
+# VERSION and CHANGELOG agree; the release workflow is wired to its assets
+check-version-lockstep
+release-assets-wired

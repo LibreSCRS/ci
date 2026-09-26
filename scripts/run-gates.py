@@ -74,6 +74,14 @@ GATES = {
     "canonical-types": ("python", "canonical-types.py", lambda c: ["--repo", c["repo"]], ()),
     "dup-scan": ("python", "dup-scan.py", lambda c: ["--repo", c["repo"]], ()),
     "selftests": ("bash4", "run-selftests.sh", lambda c: ["--root", c["root"]], ()),
+    # Everything in the tree that states a version states VERSION's, and the
+    # CHANGELOG has the section the release is heading for. The macOS host has
+    # no CMake build, so it asks only the lockstep arm -- in its profile.
+    "check-version": ("bash4", "check-version.sh", lambda c: ["--min", "1", "--verbose"], ()),
+    "check-version-lockstep": ("bash4", "check-version.sh", lambda c: ["--arms", "lockstep"], ()),
+    # The release workflow still stages and checks what ci/release-assets.txt
+    # promises -- judged on every push, not first on the tag.
+    "release-assets-wired": ("bash4", "check-release-assets.sh", lambda c: ["--wired"], ()),
     # deps.lock: format, reachability from upstream main, the diamond. After a
     # configure, the source tree CMake actually used must be the locked one --
     # the property, not the message the configure printed.

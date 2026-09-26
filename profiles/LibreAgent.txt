@@ -13,3 +13,6 @@ selftests
 test-manifest-gate build
 # The locked upstream revisions (deps.lock): format, reachability, diamond
 deps-lock
+# VERSION agrees everywhere; the release workflow is wired to its assets
+check-version
+release-assets-wired

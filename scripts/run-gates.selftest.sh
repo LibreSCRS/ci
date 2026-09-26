@@ -179,6 +179,20 @@ expect "deps-lock: a malformed lock row fails through the profile" 1 "$?" "deps.
 (cd "$T" && REPO_ROOT="$d" python3 "$RG" --repo LibreKDE --profiles "$d.p" --phase build) >"$out" 2>&1
 expect "deps-lock-build: no build dir is 'cannot judge'" 2 "$?" "build-dir"
 
+# --- check-version-lockstep reaches check-version.sh against this root: a
+#     CHANGELOG with no section for VERSION is a finding, one with it passes.
+d=$(fixture ver)
+printf 'check-version-lockstep\n' > "$d.p/LibreMac.txt"
+printf '5.0.0\n' > "$d/VERSION"
+printf '# Changelog\n\n## [4.2.0]\n\n- old\n' > "$d/CHANGELOG.md"
+commit "$d"
+(cd "$T" && REPO_ROOT="$d" python3 "$RG" --repo LibreMac --profiles "$d.p") >"$out" 2>&1
+expect "check-version-lockstep: no CHANGELOG section for VERSION fails" 1 "$?"
+printf '# Changelog\n\n## [Unreleased] \xe2\x80\x94 5.0.0\n\n- new\n' > "$d/CHANGELOG.md"
+commit "$d"
+(cd "$T" && REPO_ROOT="$d" python3 "$RG" --repo LibreMac --profiles "$d.p") >"$out" 2>&1
+expect "check-version-lockstep: the section for VERSION passes" 0 "$?"
+
 [ "$fails" = 0 ] && echo "run-gates selftest: all cases behave" || echo "run-gates selftest: FAILED"
 printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"
 exit "$fails"

@@ -15,3 +15,6 @@ test-manifest-gate build
 deps-lock
 # after configure: the source tree CMake used is the locked one
 deps-lock-build build
+# VERSION agrees everywhere; the release workflow is wired to its assets
+check-version
+release-assets-wired

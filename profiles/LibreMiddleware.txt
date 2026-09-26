@@ -13,3 +13,6 @@ warning-gate build
 test-manifest-gate build
 # build-asan, leg native
 test-manifest-gate asan
+# VERSION agrees everywhere; the release workflow is wired to its assets
+check-version
+release-assets-wired
