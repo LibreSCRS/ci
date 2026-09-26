@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: LibreSCRS gates
+description: >-
+  Run the shared gates the calling repository's profile
+  (profiles/<Repository>.txt in LibreSCRS/ci) lists for one phase, against the
+  consumer's checkout. A repository with no profile, an empty one, or
+  no gate in the requested phase is exit 2 -- never a silent pass.
+
+# Call it after the actions/checkout that provides `root` in a job that runs on
+# push; check-workflows holds both, and holds every (gate, phase) of the
+# profile to a step that calls this with that phase.
+#
+# A composite step carries no timeout-minutes of its own: the calling job's
+# bound is the bound (check-workflows requires one on every job).
+#
+# Needs python3 with PyYAML when the phase runs check-workflows (ubuntu
+# runners have it), and bash 4 or later for the shell gates (on macOS:
+# brew install bash); a missing one is exit 2.
+
+inputs:
+  root:
+    description: >-
+      Where the consumer is checked out, relative to the workspace. `.` (the
+      default) for a job that checks it out at the workspace root; a job that
+      checks out several repositories side by side names the consumer's
+      directory.
+    required: false
+    default: '.'
+  phase:
+    description: >-
+      Which of the profile's phases to run. `static` (the default) needs no
+      build; any other phase is named by the profile, e.g. `build`, `asan`.
+    required: false
+    default: static
+  build-dir:
+    description: >-
+      The configured build tree, relative to the workspace. Needed by
+      test-manifest-gate and warning-gate; exported to the consumer's
+      self-tests as BUILD_DIR.
+    required: false
+    default: ''
+  build-log:
+    description: The full build log warning-gate judges, relative to the workspace.
+    required: false
+    default: ''
+  leg:
+    description: The test-manifest leg (ci/test-manifest.<leg>.txt). Needed by test-manifest-gate.
+    required: false
+    default: ''
+  warning-leg:
+    description: >-
+      The warning-baseline section's leg (<compiler>/<leg>), for a matrix that
+      builds one compiler more than one way. Empty judges by the compiler alone.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Run the profile's gates for this phase
+      shell: bash
+      env:
+        GATES_ROOT: ${{ inputs.root }}
+        GATES_PHASE: ${{ inputs.phase }}
+        GATES_BUILD_DIR: ${{ inputs.build-dir }}
+        GATES_BUILD_LOG: ${{ inputs.build-log }}
+        GATES_LEG: ${{ inputs.leg }}
+        GATES_WARNING_LEG: ${{ inputs.warning-leg }}
+      run: |
+        python3 "$GITHUB_ACTION_PATH/../../scripts/run-gates.py" \
+          --root "$GATES_ROOT" \
+          --phase "$GATES_PHASE" \
+          --build-dir "$GATES_BUILD_DIR" \
+          --build-log "$GATES_BUILD_LOG" \
+          --leg "$GATES_LEG" \
+          --warning-leg "$GATES_WARNING_LEG"
