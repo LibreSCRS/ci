@@ -516,6 +516,51 @@ scratch_rows "t.yml:gone    a reason for a job that is not there"
 run "$T/order/scratch" "$T/order/scratch/.github/workflows/t.yml"
 judge 1 "a row naming a job that does not exist fails" $? "does not exist"
 
+# --- case 7b: the push trigger must reach main -------------------------------
+: >"$T/order/scratch/ci/gate-job-exceptions.txt"
+gate_wf() {  # gate_wf <on-block>
+    { printf '%s\n' "$1"; cat <<'YML'
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: gate
+        run: ./ci/scripts/thing.sh
+YML
+    } | mk_wf t.yml
+}
+gate_wf "on:
+  push:
+    branches: ['ci/**']"
+run "$T/order/scratch" "$T/order/scratch/.github/workflows/t.yml"
+judge 1 "a push trigger limited to ci/** does not reach main" $? "branches filter does not admit main"
+gate_wf "on:
+  push:
+    branches: [main, 'ci/**']"
+run "$T/order/scratch" "$T/order/scratch/.github/workflows/t.yml"
+judge 0 "a push trigger naming main and ci/** reaches main" $?
+gate_wf "on:
+  push:
+    branches: ['**', '!main']"
+run "$T/order/scratch" "$T/order/scratch/.github/workflows/t.yml"
+judge 1 "a negated main in the branches filter does not reach main" $? "does not admit main"
+gate_wf "on:
+  push:
+    branches-ignore: ['ma*']"
+run "$T/order/scratch" "$T/order/scratch/.github/workflows/t.yml"
+judge 1 "branches-ignore matching main does not reach main" $? "branches-ignore excludes main"
+gate_wf "on:
+  push:
+    tags: ['*']"
+run "$T/order/scratch" "$T/order/scratch/.github/workflows/t.yml"
+judge 1 "a tags-only push trigger does not reach main" $? "tags only"
+gate_wf "on:
+  push:
+    paths: ['src/**']"
+run "$T/order/scratch" "$T/order/scratch/.github/workflows/t.yml"
+judge 0 "a paths filter alone still reaches main" $?
+
 # --- case 8: a row that excuses something needing no excuse ---------------
 mk_wf t.yml <<'YML'
 on: [push]

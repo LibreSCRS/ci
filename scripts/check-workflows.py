@@ -27,7 +27,9 @@ the fourth is new with the shared gates.
   order     A step cannot run where it was placed: a `working-directory:` or a
             local action before the checkout that provides it, a gate step in
             a job that checks nothing out, or a gate step in a job that does
-            not run on push without a reason in ci/gate-job-exceptions.txt. A
+            not run on a push to main without a reason in
+            ci/gate-job-exceptions.txt (a push trigger whose branches filter
+            leaves main out -- `ci/**` only -- does not count). A
             step calling LibreSCRS/ci/actions/gates is a gate step, and it
             reads the checkout its `root` input names (default: the
             workspace root).
@@ -158,6 +160,69 @@ def triggers(doc):
     if isinstance(section, dict):
         return {str(key) for key in section}
     return set()
+
+
+# The branch a push has to reach for a gate to count: gates exist to judge
+# what lands on the default branch. A push trigger filtered to `ci/**` fires
+# on pushes, but never on main, and is not "runs on push" for this purpose.
+DEFAULT_BRANCH = "main"
+
+
+def branch_glob_re(pattern):
+    """GitHub's filter pattern syntax: `**` any characters, `*` any except
+    `/`, `?` and `+` quantify the previous character, `[...]` a class."""
+    out, i = [], 0
+    while i < len(pattern):
+        c = pattern[i]
+        if pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+            continue
+        if c == "*":
+            out.append("[^/]*")
+        elif c in "?+":
+            out.append(c)
+        elif c == "[":
+            j = pattern.find("]", i)
+            if j < 0:
+                raise Cannot("branch filter %r has an unclosed [" % pattern)
+            out.append(pattern[i:j + 1])
+            i = j + 1
+            continue
+        else:
+            out.append(re.escape(c))
+        i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
+def push_reaches(doc, branch=DEFAULT_BRANCH):
+    """(True, "") when a push to BRANCH triggers the workflow; else (False, why).
+    `paths:` filters are not modelled: a push to main that touches those paths
+    runs the workflow, which is all this rule asks."""
+    section = on_section(doc)
+    if "push" not in triggers(doc):
+        return False, "the workflow has no push trigger"
+    push = section.get("push") if isinstance(section, dict) else None
+    if not isinstance(push, dict):
+        return True, ""
+    as_list = lambda v: [str(x) for x in (v if isinstance(v, list) else [v])]
+    if "branches" in push:
+        hit = False
+        for pat in as_list(push["branches"]):
+            neg = pat.startswith("!")
+            if branch_glob_re(pat[1:] if neg else pat).match(branch):
+                hit = not neg
+        if not hit:
+            return False, "the push trigger's branches filter does not admit %s" % branch
+        return True, ""
+    if "branches-ignore" in push:
+        for pat in as_list(push["branches-ignore"]):
+            if branch_glob_re(pat).match(branch):
+                return False, "the push trigger's branches-ignore excludes %s" % branch
+        return True, ""
+    if "tags" in push or "tags-ignore" in push:
+        return False, "the push trigger fires on tags only"
+    return True, ""
 
 
 def load(path):
@@ -530,9 +595,9 @@ def step_runs_on_push(job, step):
     return False, "if: %s" % expr
 
 
-def job_runs_on_push(name, jobs, has_push, seen=None):
+def job_runs_on_push(name, jobs, has_push, seen=None, why="the workflow has no push trigger"):
     if not has_push:
-        return False, "the workflow has no push trigger"
+        return False, why
     seen = seen or set()
     if name in seen:
         return False, "needs: forms a cycle through %s" % name
@@ -548,7 +613,7 @@ def job_runs_on_push(name, jobs, has_push, seen=None):
     if isinstance(needs, str):
         needs = [needs]
     for parent in needs:
-        ok, why = job_runs_on_push(str(parent), jobs, has_push, seen)
+        ok, why = job_runs_on_push(str(parent), jobs, has_push, seen)  # has_push is True here
         if not ok:
             return False, "needs: %s, which %s" % (parent, why)
     return True, ""
@@ -687,7 +752,7 @@ def judge_order(paths, exceptions, shape, repo_mode):
         jobs = doc.get("jobs") or {}
         if not isinstance(jobs, dict) or not jobs:
             raise Cannot("%s declares no jobs" % path)
-        has_push = "push" in triggers(doc)
+        has_push, push_why = push_reaches(doc)
         jobs_total += len(jobs)
 
         for job_name, job in jobs.items():
@@ -698,7 +763,7 @@ def judge_order(paths, exceptions, shape, repo_mode):
                 continue                    # a reusable-workflow call has no steps
             if not steps:
                 raise Cannot("%s: job %s has no steps" % (path, job_name))
-            job_ok, job_why = job_runs_on_push(str(job_name), jobs, has_push)
+            job_ok, job_why = job_runs_on_push(str(job_name), jobs, has_push, why=push_why)
             defaults_wd = defaults_wd_of(doc, job)
 
             provided = set()
