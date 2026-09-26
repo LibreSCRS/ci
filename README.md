@@ -9,8 +9,8 @@ references an action here by commit SHA in its workflow, and nothing else.
 - `actions/` — composite actions the consumers call (`gates`, `checkout-deps`,
   `release-preflight`, `release-seal`, `release-publish`, `pkg-build`,
   `pkg-verify`).
-- `profiles/<Repository>.txt` — which gates a repository runs. An unknown
-  repository or an empty profile is "cannot judge" (exit 2), never a pass.
+- `actions/gates` — runs the gates its `gates:` input names (see the action for
+  the list); an empty list or an unknown name is "cannot judge" (exit 2).
 - `images.lock` — container images by digest and packaging tools by version and
   checksum.
 

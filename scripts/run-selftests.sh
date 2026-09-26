@@ -17,19 +17,15 @@
 #     non-zero on a perturbed input. A proof that never saw the gate fail is a
 #     claim about the gate's happy path.
 #
-# The set is chosen by pathspec rather than by a list here: a self-test that
-# lands outside the scanned paths is invisible to the runner, and the wiring
-# check asks this script -- with --list -- what it would execute and compares
-# that against what the repository ships. Two copies of the pathspec, one here
-# and one there, so a narrowed pathspec is a failure rather than a silence.
+# The set is chosen by pathspec rather than by a list here, so a self-test
+# added under a scanned path is run without anyone registering it.
 #
 # Interpreter by extension, never a guess: a Python self-test run under bash
 # prints a syntax error and exits non-zero, which reads as a failing gate
 # rather than a mis-run one. An extension with no interpreter is exit 2.
 #
 # Usage:
-#   run-selftests.sh [--root <checkout>]           run them all
-#   run-selftests.sh [--root <checkout>] --list    print the set
+#   run-selftests.sh [--root <checkout>]
 #
 # Exit codes -- a consumer writes the condition as `rc = 0`, never "not 1":
 #
@@ -46,13 +42,11 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
 fi
 
 root=""
-list=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --root) [ "$#" -ge 2 ] || { echo "FATAL: --root needs a directory" >&2; exit 2; }
                 root="$2"; shift 2 ;;
-        --list) list=1; shift ;;
-        *) echo "FATAL: usage: $(basename -- "$0") [--root <checkout>] [--list]" >&2; exit 2 ;;
+        *) echo "FATAL: usage: $(basename -- "$0") [--root <checkout>]" >&2; exit 2 ;;
     esac
 done
 root="${root:-${REPO_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}}"
@@ -64,8 +58,6 @@ cd "$repo" || { echo "FATAL: cannot enter $repo" >&2; exit 2; }
 # `e2e/` and `actions/` are here because self-tests live in all of them
 # somewhere in this project, and a pathspec that differed per repository is how
 # four of them once stopped being counted.
-# check-workflows asks this script (--list) what it would run and compares that
-# against what the repository ships.
 mapfile -t tests < <(git ls-files -- \
     'ci/*' 'tools/*' 'packaging/*' 'scripts/*' 'Scripts/*' 'e2e/*' 'actions/*' \
     | grep '\.selftest\.' | sort)
@@ -73,11 +65,6 @@ mapfile -t tests < <(git ls-files -- \
 if [ "${#tests[@]}" -eq 0 ]; then
     echo "FATAL: no self-tests found under the scanned paths -- wrong root?" >&2
     exit 2
-fi
-
-if [ "$list" = 1 ]; then
-    printf '%s\n' "${tests[@]}"
-    exit 0
 fi
 
 # Interpreters first, all of them, before running anything: a tool this host

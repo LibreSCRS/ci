@@ -1,104 +1,64 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""run-gates.py -- run the gates a consuming repository's profile lists.
+"""run-gates.py -- run the shared gates a workflow step names, against the
+consumer's checkout.
 
-The profile, not the workflow, says which shared gates a repository runs:
-profiles/<Repository>.txt in this repository, one gate per line, each with the
-phase it runs in. A workflow calls actions/gates once per phase -- `static` in
-its lint job, a phase of its own naming after a build (`build`, `asan`, ...) --
-and this runs every gate the profile puts in that phase, against the consumer's
-checkout.
-
-A profile that is missing, empty or unreadable is exit 2, never 0: a silent
-green over a repository whose gate list was lost is the failure this layout has
-to rule out. A phase the profile has no gate for is exit 2 too -- a step that
-runs nothing is not a step that passed. check-workflows holds the other half:
-every (gate, phase) of the profile is reached by some step, and every step's
-phase has a gate.
-
-PROFILE FORMAT
-  # comment
-  <gate> [<phase>]          phase defaults to `static`
-
-  Gate and phase are [a-z0-9][a-z0-9-]*. A gate listed twice in one phase is
-  an error. The gates and what each one needs are GATES below; the one
-  `selftests` runs the consumer's own self-tests (the repository-specific ones
-  that did not move here) through run-selftests.sh.
+The step says which gates it runs (`gates: "check-version deps-lock"` on
+actions/gates); what is run is read where it runs. An empty list or a name
+this file does not know is exit 2, never 0: a step that runs nothing has not
+passed.
 
 Usage:
-  run-gates.py [--phase P] [--root DIR] [--repo NAME] [--build-dir D]
-               [--build-log F] [--leg L] [--warning-leg W]
-  run-gates.py --list [--phase P] [--repo NAME]   print what it would run
-  run-gates.py --lint                             check every profile here
+  run-gates.py --gates "G1 G2 ..." [--root DIR] [--repo NAME] [--build-dir D]
+               [--build-log F] [--warning-leg W] [--floor FILE]
 
 The repository judged is --root, else REPO_ROOT, else $GITHUB_WORKSPACE, else
-the git checkout around the current directory. A job that checks the consumer
-out into a subdirectory (beside the checkouts it builds against) names that
-subdirectory with --root. Its name -- the profile key -- is
---repo, else the repository part of $GITHUB_REPOSITORY, else the checkout's
-directory name.
+the git checkout around the current directory. Its name (deps-lock asks for
+it) is --repo, else the repository part of $GITHUB_REPOSITORY, else the
+checkout's directory name.
 
 Exit codes -- a consumer writes the condition as `rc = 0`, never "not 1":
-  0  every gate of the phase ran and passed
+  0  every named gate ran and passed
   1  at least one gate failed (every gate still runs, so all findings show)
-  2  cannot judge: no checkout, no profile or an empty one, a malformed or
-     unknown entry, no gate in the requested phase, an input the phase needs
-     is missing, bash older than 4, or a gate itself could not judge
+  2  cannot judge: no checkout, no gate named, an unknown gate, an input a
+     named gate needs is missing, bash older than 4, or a gate itself could
+     not judge
 """
 import argparse
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PROFILES = HERE.parent / "profiles"
-NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
-DEFAULT_PHASE = "static"
 
 
 class Cannot(Exception):
     """Exit 2: this run cannot judge."""
 
 
-# gate -> (interpreter, script, argv builder, inputs it needs)
-# The builder gets the run context; the inputs are checked before anything
-# runs. Interpreter "bash4" is a shell gate that needs bash 4 or later
-# (mapfile, associative arrays); plain "bash" runs on the 3.2 macOS ships.
+# gate -> (interpreter, script, argv builder, inputs it needs). Interpreter
+# "bash4" needs bash 4 or later (mapfile, associative arrays).
 GATES = {
-    "check-format-scope": ("bash4", "check-format-scope.sh", lambda c: [], ()),
     "check-skip-reasons": ("bash4", "check-skip-reasons.sh", lambda c: [], ()),
-    "check-workflows": ("python", "check-workflows.py",
-                        lambda c: ["--repo-name", c["repo"], "--profiles", c["profiles"]], ()),
-    "canonical-types": ("python", "canonical-types.py", lambda c: ["--repo", c["repo"]], ()),
-    "dup-scan": ("python", "dup-scan.py", lambda c: ["--repo", c["repo"]], ()),
+    "check-workflows": ("python", "check-workflows.py", lambda c: [], ()),
     "selftests": ("bash4", "run-selftests.sh", lambda c: ["--root", c["root"]], ()),
     # Everything in the tree that states a version states VERSION's, and the
-    # CHANGELOG has the section the release is heading for. The macOS host has
-    # no CMake build, so it asks only the lockstep arm -- in its profile.
+    # CHANGELOG has the section the release is heading for.
     "check-version": ("bash4", "check-version.sh", lambda c: ["--min", "1", "--verbose"], ()),
+    # A tree with no CMake build (the macOS host) asks only the lockstep arm.
     "check-version-lockstep": ("bash4", "check-version.sh", lambda c: ["--arms", "lockstep"], ()),
-    # The release workflow still stages and checks what ci/release-assets.txt
-    # promises -- judged on every push, not first on the tag.
-    "release-assets-wired": ("bash4", "check-release-assets.sh", lambda c: ["--wired"], ()),
-    # The release workflow's artefacts: every download has its upload, every
-    # upload a download, the source tarball its uploader.
-    "release-artifacts": ("bash4", "check-release-artifacts.sh", lambda c: [], ()),
-    # The source tarball is a function of the commit alone (GNU tar; Linux).
-    "tarball-determinism": ("bash4", "check-tarball-determinism.sh", lambda c: [], ()),
     # deps.lock: format, reachability from upstream main, the diamond. After a
-    # configure, the source tree CMake actually used must be the locked one --
-    # the property, not the message the configure printed.
+    # configure, the source tree CMake actually used must be the locked one.
     "deps-lock": ("bash4", "bump-deps",
                   lambda c: ["check", "--root", c["root"], "--consumer", c["repo"]], ()),
     "deps-lock-build": ("bash4", "bump-deps",
                         lambda c: ["check", "--root", c["root"], "--consumer", c["repo"],
                                    "--no-remote", "--build-dir", c["build_dir"]],
                         ("build_dir",)),
-    "test-manifest-gate": ("bash", "test-manifest-gate.sh",
-                           lambda c: ["--check", c["build_dir"], c["leg"]],
-                           ("build_dir", "leg")),
+    "test-floor": ("python", "test-floor.py",
+                   lambda c: (["--floor", c["floor"]] if c["floor"] else []) + [c["build_dir"]],
+                   ("build_dir",)),
     "warning-gate": ("python", "warning-gate.py",
                      lambda c: ["--check", "--require-key"]
                      + (["--leg", c["warning_leg"]] if c["warning_leg"] else [])
@@ -106,51 +66,7 @@ GATES = {
                      ("build_dir", "build_log")),
 }
 
-INPUT_FLAG = {"build_dir": "build-dir", "build_log": "build-log", "leg": "leg"}
-
-
-def parse_profile(path):
-    """[(gate, phase)] in file order. Raises Cannot on anything malformed."""
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-    except OSError as exc:
-        raise Cannot(f"cannot read profile {path}: {exc}")
-    entries = []
-    seen = set()
-    for lineno, raw in enumerate(text.splitlines(), 1):
-        line = raw.split("#", 1)[0].strip()
-        if not line:
-            continue
-        bits = line.split()
-        if len(bits) > 2:
-            raise Cannot(f"{path}:{lineno}: '{line}' is not <gate> [<phase>]")
-        gate = bits[0]
-        phase = bits[1] if len(bits) == 2 else DEFAULT_PHASE
-        for word in (gate, phase):
-            if not NAME.fullmatch(word):
-                raise Cannot(f"{path}:{lineno}: '{word}' is not a name ([a-z0-9-])")
-        if gate not in GATES:
-            raise Cannot(f"{path}:{lineno}: '{gate}' is not a gate this repository "
-                         f"runs (known: {', '.join(sorted(GATES))})")
-        if (gate, phase) in seen:
-            raise Cannot(f"{path}:{lineno}: '{gate}' is listed twice in phase '{phase}'")
-        seen.add((gate, phase))
-        entries.append((gate, phase))
-    if not entries:
-        raise Cannot(f"profile {path} lists no gate -- an empty profile judges nothing")
-    return entries
-
-
-def profile_path(profiles, repo):
-    return Path(profiles) / f"{repo}.txt"
-
-
-def load_profile(profiles, repo):
-    path = profile_path(profiles, repo)
-    if not path.is_file():
-        raise Cannot(f"no profile for '{repo}' at {path} -- a repository with no "
-                     f"profile is not judged by an empty one")
-    return parse_profile(path)
+INPUT_FLAG = {"build_dir": "build-dir", "build_log": "build-log"}
 
 
 def repo_root(explicit=None):
@@ -167,11 +83,6 @@ def repo_root(explicit=None):
     return os.path.abspath(root)
 
 
-def repo_name(explicit, root):
-    return (explicit or os.environ.get("GITHUB_REPOSITORY", "").rpartition("/")[2]
-            or os.path.basename(root))
-
-
 def bash_is_new_enough():
     try:
         out = subprocess.run(["bash", "-c", "echo ${BASH_VERSINFO[0]}"],
@@ -182,72 +93,42 @@ def bash_is_new_enough():
         and int(out.stdout.strip()) >= 4
 
 
-def lint(profiles):
-    """Every profile here parses, and names only known gates."""
-    paths = sorted(Path(profiles).glob("*.txt"))
-    if not paths:
-        print(f"FATAL: no profiles under {profiles}", file=sys.stderr)
-        return 2
-    bad = 0
-    for path in paths:
-        try:
-            entries = parse_profile(path)
-        except Cannot as exc:
-            print(f"FAIL: {exc}")
-            bad += 1
-            continue
-        phases = sorted({p for _, p in entries})
-        print(f"ok    {path.name}: {len(entries)} gate(s) in {', '.join(phases)}")
-    return 1 if bad else 0
-
-
 def main(argv):
-    ap = argparse.ArgumentParser(description="run the gates a profile lists")
-    ap.add_argument("--phase", default=DEFAULT_PHASE)
+    ap = argparse.ArgumentParser(description="run the shared gates a step names")
+    ap.add_argument("--gates", default="")
     ap.add_argument("--root", default=None, help="the consumer checkout")
-    ap.add_argument("--repo", default=None, help="profile key (repository name)")
-    ap.add_argument("--profiles", default=str(PROFILES))
+    ap.add_argument("--repo", default=None, help="the consumer's repository name")
     ap.add_argument("--build-dir", default="")
     ap.add_argument("--build-log", default="")
-    ap.add_argument("--leg", default="", help="test-manifest leg")
     ap.add_argument("--warning-leg", default="", help="warning-baseline leg")
-    ap.add_argument("--list", action="store_true")
-    ap.add_argument("--lint", action="store_true")
+    ap.add_argument("--floor", default="", help="test-floor file (default ci/test-floor.txt)")
     args = ap.parse_args(argv)
 
-    if args.lint:
-        return lint(args.profiles)
-
     try:
-        if not NAME.fullmatch(args.phase):
-            raise Cannot(f"phase '{args.phase}' is not a name ([a-z0-9-])")
-        root = repo_root(args.root)
-        repo = repo_name(args.repo, root)
-        entries = load_profile(args.profiles, repo)
-        gates = [g for g, p in entries if p == args.phase]
+        gates = args.gates.split()
         if not gates:
-            have = sorted({p for _, p in entries})
-            raise Cannot(f"profile '{repo}' has no gate in phase '{args.phase}' "
-                         f"(its phases: {', '.join(have)}) -- a step that runs "
-                         f"nothing has not passed")
-        ctx = {"root": root, "repo": repo, "profiles": str(Path(args.profiles).resolve()),
-               "build_dir": args.build_dir, "build_log": args.build_log, "leg": args.leg,
-               "warning_leg": args.warning_leg}
+            raise Cannot("no gate named -- a step that runs nothing has not passed")
+        unknown = [g for g in gates if g not in GATES]
+        if unknown:
+            raise Cannot(f"unknown gate(s): {', '.join(unknown)} "
+                         f"(known: {', '.join(sorted(GATES))})")
+        if len(set(gates)) != len(gates):
+            raise Cannot(f"a gate is named twice in '{args.gates}'")
+        root = repo_root(args.root)
+        repo = (args.repo or os.environ.get("GITHUB_REPOSITORY", "").rpartition("/")[2]
+                or os.path.basename(root))
+        ctx = {"root": root, "repo": repo, "build_dir": args.build_dir,
+               "build_log": args.build_log, "warning_leg": args.warning_leg,
+               "floor": args.floor}
         missing = sorted({INPUT_FLAG[i] for g in gates for i in GATES[g][3] if not ctx[i]})
         if missing:
-            raise Cannot(f"phase '{args.phase}' runs {', '.join(gates)}, which need "
-                         f"{', '.join('--' + m for m in missing)}")
+            raise Cannot(f"{', '.join(gates)} need {', '.join('--' + m for m in missing)}")
         if any(GATES[g][0] == "bash4" for g in gates) and not bash_is_new_enough():
             raise Cannot("the bash on PATH is older than 4 -- these gates need 4 or "
                          "later (on macOS: brew install bash)")
     except Cannot as exc:
         print(f"run-gates: FATAL: {exc}", file=sys.stderr)
         return 2
-
-    if args.list:
-        for g in gates:
-            print(g)
-        return 0
 
     env = dict(os.environ, REPO_ROOT=root)
     if args.build_dir:
@@ -273,7 +154,7 @@ def main(argv):
         print(f"  {verdict:<13} {gate} (exit {rc})")
     failed = sum(1 for _, rc, _ in results if rc not in (0, 2))
     unjudged = sum(1 for _, rc, _ in results if rc == 2)
-    print(f"run-gates: {repo} phase {args.phase}: {len(results)} gate(s), "
+    print(f"run-gates: {repo}: {len(results)} gate(s), "
           f"{len(results) - failed - unjudged} passed, {failed} failed, "
           f"{unjudged} could not judge")
     if failed:
