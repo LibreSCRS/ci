@@ -134,7 +134,14 @@ def main(argv):
             for binary in sorted(counts):
                 print(f"{binary} {counts[binary]}")
             return 0
-        floor = read_floor(os.path.join(root, floor_file))
+        try:
+            floor = read_floor(os.path.join(root, floor_file))
+        except Cannot:
+            # What this build registers, so the file can be written from the log.
+            print(f"this build registers (as a floor file for {floor_file}):")
+            for binary in sorted(counts):
+                print(f"  {binary} {counts[binary]}")
+            raise
     except Cannot as exc:
         print(f"FATAL: {exc}", file=sys.stderr)
         return 2

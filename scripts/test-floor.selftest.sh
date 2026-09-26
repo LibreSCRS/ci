@@ -81,7 +81,8 @@ d=$(project leg "${three[@]}")
 printf 'beta_tests 1\n' > "$d/ci/test-floor.asan.txt"
 expect "6 --floor names another file (one per leg)" 0 "$(judge "$d" --floor ci/test-floor.asan.txt build)" \
     "1 binary judged"
-expect "7 no floor file cannot be judged" 2 "$(judge "$d" build)" "no floor file"
+expect "7 no floor file cannot be judged, and the census is printed" 2 "$(judge "$d" build)" \
+    "no floor file" "  alpha_tests 2"
 
 printf '# nothing\n' > "$d/ci/test-floor.txt"
 expect "8 an empty floor file cannot be judged" 2 "$(judge "$d" build)" "names no binary"
