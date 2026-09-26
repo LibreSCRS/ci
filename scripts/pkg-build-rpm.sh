@@ -101,8 +101,10 @@ defines=( --define "debug_package %{nil}" --define "_smp_build_ncpus $JOBS" )
 case "$MANAGER" in
 dnf)
     pm_install() { dnf -y -q install "$@"; }
-    # file: brp-strip finds what to strip with it, and a container without
-    # it strips nothing (measured: every library shipped unstripped).
+    # file: brp-strip finds what to strip with it. With debug packages off,
+    # brp-strip (strip -g) is the only step that removes debug information;
+    # the symbol table stays, which rpmlint reports as an unjudged
+    # unstripped-binary-or-object warning.
     dnf -y -q install rpm-build rpmdevtools dnf-plugins-core tar file >/dev/null
     ;;
 zypper)
