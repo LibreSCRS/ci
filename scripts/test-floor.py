@@ -12,6 +12,10 @@ Counted from `ctest --show-only=json-v1`, never by running anything: each
 registered test's command names its binary (gtest_discover_tests registers
 one test per case, all with the same binary; a plain add_test registers
 one), so the count is the number of tests CTest would run from that binary.
+The key is the test executable itself, or the in-tree script an interpreter
+runs: launchers in front of it (cmake -P LaunchTest.cmake under DISCOVERY_MODE
+PRE_TEST, cmake -E env, dbus-run-session, emulators, python*/bash/sh) are
+stripped. A command that is only a launcher cannot be judged (exit 2).
 
 FLOOR FILE (default ci/test-floor.txt, relative to the consumer root)
   # comment
@@ -85,8 +89,73 @@ def census(build_dir):
         cmd = t.get("command") or []
         if not cmd:
             raise Cannot(f"test {t.get('name')!r} has no command -- cannot say whose it is")
-        counts[os.path.basename(cmd[0])] += 1
+        counts[test_key(t.get("name"), cmd)] += 1
     return counts
+
+
+# What runs a test without being it: CMake as a launcher (`-P` script, `-E env`),
+# interpreters, session and display wrappers, emulators. The version a distro
+# puts in an interpreter's name (python3.14) must not become the key.
+LAUNCHER = re.compile(r"^(cmake|env|dbus-run-session|xvfb-run|valgrind|wine(64)?|qemu-.*"
+                      r"|python[0-9.]*|bash|sh|dash|zsh|perl)$")
+
+
+def test_key(name, cmd):
+    """The basename of the test executable, or of the in-tree script an
+    interpreter runs, with every launcher in front of it stripped."""
+    args = list(cmd)
+    while args:
+        base = os.path.basename(args[0])
+        if not LAUNCHER.match(base):
+            return base
+        rest = args[1:]
+        if base == "cmake":
+            if rest[:2] == ["-E", "env"]:
+                rest = rest[2:]
+                while rest and ("=" in rest[0] and not rest[0].startswith("/")
+                                or rest[0].startswith("--unset")):
+                    rest = rest[1:]
+                rest = rest[1:] if rest[:1] == ["--"] else rest
+            elif "-P" in rest:
+                # gtest_discover_tests(DISCOVERY_MODE PRE_TEST): LaunchTest.cmake
+                # carries the real binary as -D TEST_EXECUTABLE=<path>.
+                defs = [a[2:] if a.startswith("-D") and len(a) > 2 else a
+                        for a in rest]
+                exe = [d.split("=", 1)[1] for d in defs if d.startswith("TEST_EXECUTABLE=")]
+                if exe and exe[0]:
+                    return os.path.basename(exe[0])
+                script = rest[rest.index("-P") + 1:rest.index("-P") + 2]
+                if script:
+                    return os.path.basename(script[0])
+                rest = []
+            else:
+                rest = []
+        elif base.startswith("python") or base == "perl":
+            while rest and rest[0].startswith("-") and rest[0] not in ("-m", "-c"):
+                rest = rest[1:]
+            if rest[:1] == ["-m"] and len(rest) > 1:
+                return rest[1]
+            if rest[:1] == ["-c"]:
+                rest = []
+        elif base in ("bash", "sh", "dash", "zsh"):
+            while rest and rest[0].startswith("-") and rest[0] != "-c":
+                rest = rest[1:]
+            if rest[:1] == ["-c"]:
+                rest = []
+        elif base == "env":
+            while rest and (rest[0].startswith("-") or "=" in rest[0]):
+                rest = rest[1:]
+        else:
+            # dbus-run-session, xvfb-run, valgrind, emulators: options, then
+            # an optional `--`, then the program.
+            while rest and rest[0].startswith("-") and rest[0] != "--":
+                rest = rest[1:]
+            rest = rest[1:] if rest[:1] == ["--"] else rest
+        if not rest:
+            raise Cannot(f"test {name!r} runs only a launcher ({' '.join(cmd)}) -- "
+                         f"cannot say which binary it counts for")
+        args = rest
+    raise Cannot(f"test {name!r} has no command -- cannot say whose it is")
 
 
 def read_floor(path):

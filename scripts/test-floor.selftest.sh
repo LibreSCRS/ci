@@ -46,6 +46,10 @@ project() {
         printf 'cmake_minimum_required(VERSION 3.20)\nproject(p NONE)\nenable_testing()\n'
         printf 'file(WRITE ${CMAKE_BINARY_DIR}/alpha_tests "#!/bin/sh\\n")\n'
         printf 'file(WRITE ${CMAKE_BINARY_DIR}/beta_tests "#!/bin/sh\\n")\n'
+        # Launchers, as stubs at absolute paths so CTest resolves them.
+        for l in python3.14 python3.15 dbus-run-session bash; do
+            printf 'file(WRITE ${CMAKE_BINARY_DIR}/%s "#!/bin/sh\\n")\n' "$l"
+        done
         printf '%s\n' "$@"
     } > "$d/src/CMakeLists.txt"
     cmake -S "$d/src" -B "$d/build" >/dev/null 2>&1 || { echo "FATAL: cmake failed" >&2; exit 2; }
@@ -109,6 +113,38 @@ mkdir -p "$T/nowhere"
 (cd "$T/nowhere" && GIT_CEILING_DIRECTORIES="$T" python3 "$GATE" build) >"$out" 2>&1
 expect "15 no checkout anywhere cannot be judged" 2 "$?" "no repository to judge"
 
-if [ "$fails" = 0 ]; then echo "test-floor selftest: all cases behave"; else echo "test-floor selftest: FAILED"; fi
+if # --- launchers are stripped: the key is the test executable or in-tree script.
+# gtest_discover_tests(DISCOVERY_MODE PRE_TEST) registers every case as
+# `cmake -D TEST_EXECUTABLE=<bin> ... -P LaunchTest.cmake` (shape measured on
+# CMake 4.4 with a real GTest build).
+pre() {  # pre <test> <binary>
+    printf 'add_test(NAME %s COMMAND ${CMAKE_COMMAND} -D TEST_EXECUTABLE=%s -D TEST_EXECUTOR= -D TEST_FILTER=%s -D TEST_XML_OUTPUT= -D TEST_EXTRA_ARGS= -P ${CMAKE_ROOT}/Modules/GoogleTest/LaunchTest.cmake)' "$1" "$2" "$1"
+}
+PY='${CMAKE_BINARY_DIR}/python3.14 ${CMAKE_SOURCE_DIR}/check-catalogs.py'
+wrapped=("$(pre A.one "$A")" "$(pre A.two "$A")" "$(pre B.one "$B")"
+         "add_test(NAME cat COMMAND $PY)"
+         "add_test(NAME envd COMMAND \${CMAKE_COMMAND} -E env QT_QPA_PLATFORM=offscreen $B --gtest_filter=B.two)"
+         "add_test(NAME bus COMMAND \${CMAKE_BINARY_DIR}/dbus-run-session -- $B --gtest_filter=B.three)")
+d=$(project pretest "${wrapped[@]}")
+printf 'alpha_tests 2\nbeta_tests 3\ncheck-catalogs.py 1\n' > "$d/ci/test-floor.txt"
+expect "16 PRE_TEST, cmake -E env, dbus-run-session and python keyed by what they run" 0 \
+    "$(judge "$d" build)" "ok    alpha_tests: 2 >= 2" "ok    beta_tests: 3 >= 3" "ok    check-catalogs.py: 1 >= 1"
+grep -qE 'note  (cmake|python|dbus)' "$out" && { echo "FAIL  16b a launcher became a key"; fails=1; }
+
+d=$(project pretest-lost "${wrapped[0]}" "${wrapped[@]:2}")
+printf 'alpha_tests 2\nbeta_tests 3\ncheck-catalogs.py 1\n' > "$d/ci/test-floor.txt"
+expect "17 RED: PRE_TEST binary loses one test, and THAT binary is named" 1 "$(judge "$d" build)" \
+    "alpha_tests: 1 test(s), floor 2 -- 1 lost" "ok    beta_tests: 3 >= 3"
+
+d=$(project pyrename "${three[@]}" "add_test(NAME cat COMMAND ${PY/python3.14/python3.15})")
+printf 'alpha_tests 2\ncheck-catalogs.py 1\n' > "$d/ci/test-floor.txt"
+expect "18 the interpreter's version moving (python3.14 -> 3.15) stays green" 0 "$(judge "$d" build)" \
+    "ok    check-catalogs.py: 1 >= 1"
+
+d=$(project bare "${three[@]}" 'add_test(NAME inline COMMAND ${CMAKE_BINARY_DIR}/bash -c "exit 0")')
+printf 'alpha_tests 2\n' > "$d/ci/test-floor.txt"
+expect "19 a test that is only a launcher cannot be judged" 2 "$(judge "$d" build)" "runs only a launcher"
+
+[ "$fails" = 0 ]; then echo "test-floor selftest: all cases behave"; else echo "test-floor selftest: FAILED"; fi
 printf 'selftest: %s cases, %s red-proved\n' "$cases" "$red"
 exit "$fails"
