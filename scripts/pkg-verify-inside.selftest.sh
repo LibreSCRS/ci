@@ -221,5 +221,21 @@ stack deb; printf 'librescrs-agent.deb\nlibrescrs-gone.deb\n' >"$work/report/lin
 verify apt; rc=$?
 grep -q '^FAIL S8 every package named for linting is present' "$work/log"; expect "a scope naming a package that is not there is red" "1 0" "$rc $?"
 
+# S10: the consumer's hook runs last, in the same run, with FAMILY set, and its
+# exit status is the verdict.
+cat >"$work/hook.sh" <<'HOOK'
+#!/usr/bin/env bash
+echo "PASS hook saw FAMILY=$FAMILY"
+exit "${HOOK_RC:-0}"
+HOOK
+rm -f "$work/report/lint-files.txt"
+stack deb; verify apt PKG_VERIFY_HOOK="$work/hook.sh"; rc=$?
+grep -q '^PASS hook saw FAMILY=deb' "$work/log" && grep -q '^PASS S10 ' "$work/log"
+expect "the repository hook runs in the same run and passes" "0 0" "$rc $?"
+tail -n 3 "$work/log" | grep -q '^PASS S10 '; expect "the hook runs after every stack check" 0 $?
+stack deb; verify apt PKG_VERIFY_HOOK="$work/hook.sh" HOOK_RC=1; rc=$?
+grep -q '^FAIL S10 ' "$work/log"; expect "a failing hook is red" "1 0" "$rc $?"
+stack deb; verify apt; rc=$?; grep -q "S10" "$work/log"; expect "no hook: green, and no S10 line" "0 1" "$rc $?"
+
 [ "$fail" -eq 0 ] || { echo "pkg-verify-inside.selftest: FAILED"; exit 1; }
 echo "selftest: $cases cases, $red red-proved"

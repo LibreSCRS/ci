@@ -27,6 +27,7 @@ while [ $# -gt 0 ]; do
   case "$1" in --rm) shift ;; -v) IFS=: read -r a b _ <<<"$2"; m[$b]="$a"; shift 2 ;; -e|--network) shift 2 ;; *) break ;; esac
 done
 echo "$1 ${*:2}" >>"$STUB_LOG"
+for k in "${!m[@]}"; do echo "$k=${m[$k]}"; done | sort >"$STUB_LOG.mounts"
 [ -n "${STUB_DEAD:-}" ] && exit 125
 r="${m[/report]}"
 # like the container: lint every package, or only those lint-files.txt names
@@ -75,6 +76,23 @@ v STUB_DEAD=1; expect "a container that never ran cannot be judged" 2 $?
 mkdir -p "$work/empty"
 "$tool" --slug debian13 --packages "$work/empty" >"$work/log" 2>&1; expect "no package cannot be judged" 2 $?
 "$tool" --slug nosuchslug --packages "$work/p" >"$work/log" 2>&1; expect "an unknown slug cannot be judged" 2 $?
+
+# --hook: the consumer's assertions ride in the same container, own packages
+# at /pkg and each upstream's at /pkg-<Repository>.
+mkdir -p "$work/h/LibreLinux/deb" "$work/h/LibreMiddleware/deb"
+printf 'x\n' >"$work/h/LibreLinux/deb/librescrs-agent_5.0.0-1_amd64.deb"
+printf 'x\n' >"$work/h/LibreMiddleware/deb/liblibrescrs5_5.0.0-1_amd64.deb"
+printf '#!/bin/sh\n' >"$work/hook.sh"
+hv() { "$tool" --slug debian13 --packages "$work/h" --accepted "$work/acc" "$@" >"$work/log" 2>&1; }
+hv --hook "$work/hook.sh" --name LibreLinux; rc=$?
+grep -qx "/pkg=$work/h/LibreLinux/deb" "$work/docker.log.mounts" \
+  && grep -qx "/pkg-LibreMiddleware=$work/h/LibreMiddleware/deb" "$work/docker.log.mounts" \
+  && grep -qx "/hook.sh=$work/hook.sh" "$work/docker.log.mounts"
+expect "the hook is mounted into the one container with /pkg and /pkg-<Repository>" "0 0" "$rc $?"
+hv --hook "$work/hook.sh" --name LibreKDE; expect "a hook whose repository has no packages cannot be judged" 2 $?
+hv --hook "$work/nohook.sh" --name LibreLinux; expect "a hook that is not a file cannot be judged" 2 $?
+hv --hook "$work/hook.sh"; expect "a hook without --name cannot be judged" 2 $?
+v; rc=$?; grep -q '^/hook.sh=' "$work/docker.log.mounts"; expect "no hook, nothing mounted for one" "0 1" "$rc $?"
 
 [ "$fail" -eq 0 ] || { echo "pkg-verify.selftest: FAILED"; exit 1; }
 echo "selftest: $cases cases, $red red-proved"

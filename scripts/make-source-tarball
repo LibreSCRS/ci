@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# make-source-tarball -- the release's source tarball, <name>_<version>.orig.tar.gz
+# (the name dpkg-source expects of an .orig), byte-for-byte a function of the
+# commit: the same commit gives the same sha256 on any machine with GNU tar and
+# the same gzip.
+#
+# Usage: make-source-tarball --name SOURCE [--root DIR] [--repo NAME]
+#                            [--version V] [--submodules yes|no]
+#                            [--exclude PATH]... [--vendor DEST=GITURL@PINFILE]...
+#                            [--out DIR]
+#
+#   --name        Debian source name (librescrs-middleware, libreagent, ...)
+#   --version     default: the first line of <root>/VERSION
+#   --submodules  yes (default): the tree comes from a clone with
+#                 --recurse-submodules -- `git archive` does not descend into
+#                 submodules, and a tree without thirdparty/curl-source once
+#                 failed configuration ("No download info given for
+#                 'curl_external'"). no: the committed tree alone.
+#   --exclude     a path under the top directory left out; .github, build and
+#                 debian always are. Excludes are ANCHORED to the top directory:
+#                 an unanchored './.github' matched no member tar ever writes,
+#                 and the release tarball shipped .github/ for as long as that
+#                 exclude existed. There is deliberately no
+#                 --exclude-vcs-ignores: the vendored OpenSC ignores *.[0-9]
+#                 while tracking a man page that matches it, and dropping it
+#                 broke its autotools build.
+#   --vendor      a dependency fetched at configure time rather than carried as
+#                 a submodule, placed at DEST at the commit of the one
+#                 `GIT_TAG <40-hex>` in PINFILE (the file the build would fetch
+#                 with, so the two cannot drift): the package build never
+#                 reaches the network.
+#   --out         output directory (default: the working directory)
+#
+# The top directory is <Repo>-<version> (repository name from --repo, else
+# GITHUB_REPOSITORY, else the root's directory name): Arch recipes cd into it,
+# and dpkg-source renames whatever it finds.
+#
+# Determinism: --sort=name fixes member order (otherwise readdir order, a
+# property of the filesystem); --mtime from the commit, --owner/--group 0 and
+# --mode='go-w,a+rX' remove the clone time, the caller's identity and the
+# caller's umask (one commit cloned under umask 022 and 002 gave two sums);
+# gzip -n writes no name or time of its own.
+#
+# The copy comes from the COMMITTED tree (a clone of the checkout), never the
+# working tree. Root: --root, else REPO_ROOT, else GITHUB_WORKSPACE, else the git
+# top level of the working directory.
+#
+# Exit codes: 0 written (its sha256 printed); 1 a pin or vendored tree is not
+# what it must be; 2 usage, no root, no VERSION.
+set -euo pipefail
+
+usage() { echo "usage: make-source-tarball --name SOURCE [--root DIR] [--repo NAME] [--version V] [--submodules yes|no] [--exclude PATH]... [--vendor DEST=GITURL@PINFILE]... [--out DIR]" >&2; exit 2; }
+NAME="" ROOT="" REPO="" VERSION="" SUBS=yes OUT="$PWD"
+EXCLUDES=(.github build debian) VENDORS=()
+while [ "$#" -gt 0 ]; do
+  [ "$#" -ge 2 ] || usage
+  case "$1" in
+    --name) NAME="$2" ;;
+    --root) ROOT="$2" ;;
+    --repo) REPO="$2" ;;
+    --version) VERSION="$2" ;;
+    --submodules) case "$2" in yes|no) SUBS="$2" ;; *) usage ;; esac ;;
+    --exclude) EXCLUDES+=("${2#./}") ;;
+    --vendor) case "$2" in ?*=?*@?*) VENDORS+=("$2") ;; *) usage ;; esac ;;
+    --out) OUT="$2" ;;
+    *) usage ;;
+  esac
+  shift 2
+done
+[ -n "$NAME" ] || usage
+[ -n "$ROOT" ] || ROOT="${REPO_ROOT:-${GITHUB_WORKSPACE:-}}"
+[ -n "$ROOT" ] || ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$ROOT" ] && [ -d "$ROOT" ] || { echo "make-source-tarball: no repository -- set REPO_ROOT or pass --root" >&2; exit 2; }
+ROOT="$(cd "$ROOT" && pwd)"
+if [ -z "$REPO" ]; then REPO="${GITHUB_REPOSITORY:-}"; REPO="${REPO##*/}"; fi
+[ -n "$REPO" ] || REPO="$(basename "$ROOT")"
+if [ -z "$VERSION" ]; then
+  [ -f "$ROOT/VERSION" ] || { echo "make-source-tarball: no VERSION in $ROOT and no --version" >&2; exit 2; }
+  VERSION="$(sed -n 1p "$ROOT/VERSION" | tr -d '[:space:]')"
+fi
+[ -n "$VERSION" ] || { echo "make-source-tarball: empty version" >&2; exit 2; }
+
+work="$(mktemp -d "${TMPDIR:-/var/tmp}/make-source-tarball.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+top="$REPO-$VERSION"
+tree="$work/$top"
+
+if [ "$SUBS" = yes ]; then
+  git clone --quiet --recurse-submodules "$ROOT" "$tree"
+else
+  git clone --quiet "$ROOT" "$tree"
+fi
+find "$tree" -name .git -prune -exec rm -rf {} +
+
+for v in "${VENDORS[@]}"; do
+  dest="${v%%=*}" rest="${v#*=}"
+  url="${rest%@*}" pinfile="${rest##*@}"
+  mapfile -t pins < <(sed -nE 's/^[[:space:]]*GIT_TAG[[:space:]]+([0-9a-f]{40})[[:space:]]*$/\1/p' "$ROOT/$pinfile" 2>/dev/null)
+  [ "${#pins[@]}" -eq 1 ] || { echo "make-source-tarball: $pinfile must hold exactly one 'GIT_TAG <40-hex>' line; found ${#pins[@]}" >&2; exit 1; }
+  git clone --quiet "$url" "$tree/$dest"
+  git -C "$tree/$dest" checkout --quiet "${pins[0]}" \
+    || { echo "make-source-tarball: $url has no commit ${pins[0]}" >&2; exit 1; }
+  [ "$(git -C "$tree/$dest" rev-parse HEAD)" = "${pins[0]}" ] || { echo "make-source-tarball: $dest is not at ${pins[0]}" >&2; exit 1; }
+  rm -rf "$tree/$dest/.git"
+  echo "make-source-tarball: vendored $dest at ${pins[0]}"
+done
+
+mkdir -p "$OUT"
+ex=()
+for e in "${EXCLUDES[@]}"; do ex+=("--exclude=$top/$e"); done
+epoch="$(git -C "$ROOT" log -1 --format=%ct)"
+tar --sort=name \
+    --mtime="@$epoch" --owner=0 --group=0 --numeric-owner --format=gnu \
+    --mode='go-w,a+rX' "${ex[@]}" \
+    -C "$work" -cf - "$top" \
+  | gzip -n -9 >"$OUT/${NAME}_${VERSION}.orig.tar.gz"
+sha256sum "$OUT/${NAME}_${VERSION}.orig.tar.gz"

@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-2.1-or-later
+"""check-sbom -- refuse to publish a release whose bill of materials is missing,
+empty or not a bill.
+
+make-sbom refuses to WRITE an empty bill; this refuses to PUBLISH one. It reads
+what reached the release directory, so it also catches the bill that never
+arrived (a job that made none, a download that did not merge it). It judges the
+document, not whether it describes the artefact beside it: it must parse, say
+CycloneDX, and carry a non-empty components array whose every entry has a name.
+
+Usage:  check-sbom <bill.cdx.json> [<bill.cdx.json> ...]
+Exit codes: 0 every bill publishable; 1 one is not; 2 usage.
+"""
+
+import json
+import sys
+
+
+def check(path):
+    """An error string, or "" when the bill is publishable."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except FileNotFoundError:
+        return f"{path}: missing -- the build published no bill of materials"
+    except (OSError, ValueError) as exc:
+        return f"{path}: unreadable ({exc})"
+    if not isinstance(doc, dict) or doc.get("bomFormat") != "CycloneDX":
+        return f"{path}: not a CycloneDX document"
+    components = doc.get("components")
+    if not isinstance(components, list):
+        return f"{path}: no components array"
+    if not components:
+        return f"{path}: zero components -- a signed bill claiming the artefact bundles nothing"
+    nameless = [c for c in components if not isinstance(c, dict) or not c.get("name")]
+    if nameless:
+        return f"{path}: {len(nameless)} component(s) carry no name"
+    print(f"check-sbom: {path}: {len(components)} components")
+    return ""
+
+
+def main(argv):
+    if not argv:
+        print("usage: check-sbom <bill.cdx.json> ...", file=sys.stderr)
+        return 2
+    errors = [e for e in (check(p) for p in argv) if e]
+    for e in errors:
+        print(f"::error::{e}", file=sys.stderr)
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

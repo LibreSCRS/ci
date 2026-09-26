@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# make-sbom -- a CycloneDX bill of materials for what is bundled INSIDE a
+# repository's binaries: what no package metadata will ever name. Measured on a
+# real build, lintian flagged the bundled curl and said nothing about the
+# statically linked OpenSSL, so this file is the only place either appears.
+#
+# Usage: make-sbom --out FILE [--root DIR] [--repo NAME]
+#                  [--static-dep NAME=CHECKOUT]... [--require COMPONENT]...
+#
+# Every version and commit is read from a tree, never typed here. What a tree
+# bundles is found by these probes, each allowed to come up empty:
+#   openssl        thirdparty/openssl-<version>/ (two such directories: refused,
+#                  a bill cannot say which one ships)
+#   curl           the thirdparty/curl-source submodule's checked-out commit
+#                  (the recipe is a CONSUMER of that pin and only the fallback)
+#                  and its curlver.h
+#   opensc         the OpenSC archive commit in packaging/arch/PKGBUILD
+#   qcbor          the one GIT_TAG in cmake/FetchQCBOR.cmake
+#   nlohmann-json  the version macros of thirdparty/nlohmann/json.hpp
+#   miniz          thirdparty/miniz/VERSION.txt, else MZ_VERSION (which is the
+#                  zlib version miniz emulates, visibly not a miniz release)
+#
+# --static-dep NAME=CHECKOUT: an upstream linked statically, e.g. LibreAgent
+#   into the agent. CHECKOUT must be at the commit the root's deps.lock locks
+#   NAME at (a bill read from any other tree names code the release did not
+#   build); NAME becomes a component and CHECKOUT is probed like the root.
+# --require COMPONENT: the bill must name it. Because every probe tolerates
+#   absence, a tree that moved or renamed a pin looks like a tree that bundles
+#   nothing; a required component turns that into a refusal. An empty bill is
+#   always refused -- a signed document saying an artefact bundles nothing.
+#
+# Root: --root, else REPO_ROOT, else GITHUB_WORKSPACE, else the git top level of
+# the working directory. Name: --repo, else GITHUB_REPOSITORY's repository part,
+# else the root's directory name.
+#
+# Exit codes: 0 written; 1 refused (empty, a required component missing, a
+# static dependency not at its lock, two OpenSSL trees); 2 usage, no root, no
+# VERSION, no python3.
+set -euo pipefail
+
+usage() { echo "usage: make-sbom --out FILE [--root DIR] [--repo NAME] [--static-dep NAME=CHECKOUT]... [--require COMPONENT]..." >&2; exit 2; }
+OUT="" ROOT="" REPO=""
+DEPS=() REQUIRE=()
+while [ "$#" -gt 0 ]; do
+  [ "$#" -ge 2 ] || usage
+  case "$1" in
+    --out) OUT="$2" ;;
+    --root) ROOT="$2" ;;
+    --repo) REPO="$2" ;;
+    --static-dep) case "$2" in ?*=?*) DEPS+=("$2") ;; *) usage ;; esac ;;
+    --require) REQUIRE+=("$2") ;;
+    *) usage ;;
+  esac
+  shift 2
+done
+[ -n "$OUT" ] || usage
+command -v python3 >/dev/null 2>&1 || { echo "make-sbom: python3 is not on PATH" >&2; exit 2; }
+[ -n "$ROOT" ] || ROOT="${REPO_ROOT:-${GITHUB_WORKSPACE:-}}"
+[ -n "$ROOT" ] || ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$ROOT" ] && [ -d "$ROOT" ] || { echo "make-sbom: no repository -- set REPO_ROOT or pass --root" >&2; exit 2; }
+ROOT="$(cd "$ROOT" && pwd)"
+if [ -z "$REPO" ]; then REPO="${GITHUB_REPOSITORY:-}"; REPO="${REPO##*/}"; fi
+[ -n "$REPO" ] || REPO="$(basename "$ROOT")"
+[ -f "$ROOT/VERSION" ] || { echo "make-sbom: no VERSION in $ROOT" >&2; exit 2; }
+version="$(sed -n 1p "$ROOT/VERSION" | tr -d '[:space:]')"
+
+rows="$(mktemp "${TMPDIR:-/var/tmp}/make-sbom.XXXXXX")"
+trap 'rm -f "$rows"' EXIT
+row() { printf '%s\t%s\t%s\t%s\t%s\n' "$@" >>"$rows"; }   # name version purl licence description
+
+probe() {  # probe <tree> <description>
+  local t="$1" why="$2" d n=0 ver="" sha="" maj min pat
+  for d in "$t"/thirdparty/openssl-*; do
+    [ -d "$d" ] || continue
+    n=$((n + 1)); ver="${d##*/openssl-}"
+  done
+  if [ "$n" -gt 1 ]; then echo "make-sbom: $n thirdparty/openssl-* directories in $t -- cannot say which one ships" >&2; exit 1; fi
+  [ -z "$ver" ] || row openssl "$ver" "pkg:generic/openssl@$ver" Apache-2.0 "$why"
+
+  sha=""
+  if [ -e "$t/thirdparty/curl-source/.git" ]; then sha="$(git -C "$t/thirdparty/curl-source" rev-parse HEAD 2>/dev/null || true)"; fi
+  [ -n "$sha" ] || sha="$(grep -oE 'github.com/curl/curl/archive/[0-9a-f]{40}' "$t/packaging/arch/PKGBUILD" 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -n1 || true)"
+  local h="$t/thirdparty/curl-source/include/curl/curlver.h"
+  if [ -n "$sha" ] && [ -f "$h" ]; then
+    maj="$(awk '/^#define LIBCURL_VERSION_MAJOR /{print $3}' "$h")"
+    min="$(awk '/^#define LIBCURL_VERSION_MINOR /{print $3}' "$h")"
+    pat="$(awk '/^#define LIBCURL_VERSION_PATCH /{print $3}' "$h")"
+    [ -z "$maj$min$pat" ] || row curl "$maj.$min.$pat" "pkg:github/curl/curl@$sha" curl "$why"
+  fi
+
+  sha="$(grep -oE 'github.com/OpenSC/OpenSC/archive/[0-9a-f]{40}' "$t/packaging/arch/PKGBUILD" 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -n1 || true)"
+  [ -z "$sha" ] || row opensc "git-$sha" "pkg:github/OpenSC/OpenSC@$sha" LGPL-2.1-or-later "$why"
+
+  sha="$(sed -nE 's/^[[:space:]]*GIT_TAG[[:space:]]+([0-9a-f]{40})[[:space:]]*$/\1/p' "$t/cmake/FetchQCBOR.cmake" 2>/dev/null | head -n1 || true)"
+  [ -z "$sha" ] || row qcbor "git-$sha" "pkg:github/laurencelundblade/QCBOR@$sha" BSD-3-Clause "$why"
+
+  h="$t/thirdparty/nlohmann/json.hpp"
+  if [ -f "$h" ]; then
+    maj="$(awk '/^#define NLOHMANN_JSON_VERSION_MAJOR /{print $3; exit}' "$h")"
+    min="$(awk '/^#define NLOHMANN_JSON_VERSION_MINOR /{print $3; exit}' "$h")"
+    pat="$(awk '/^#define NLOHMANN_JSON_VERSION_PATCH /{print $3; exit}' "$h")"
+    [ -z "$maj" ] || [ -z "$min" ] || [ -z "$pat" ] || row nlohmann-json "$maj.$min.$pat" "pkg:github/nlohmann/json@v$maj.$min.$pat" MIT "$why"
+  fi
+
+  ver=""
+  [ ! -f "$t/thirdparty/miniz/VERSION.txt" ] || ver="$(tr -d '[:space:]' <"$t/thirdparty/miniz/VERSION.txt")"
+  [ -n "$ver" ] || [ ! -f "$t/thirdparty/miniz/miniz.h" ] \
+    || ver="$(sed -n 's/^#define MZ_VERSION  *"\([^"]*\)".*/\1/p' "$t/thirdparty/miniz/miniz.h" | head -n1)"
+  [ -z "$ver" ] || row miniz "$ver" "pkg:github/richgel999/miniz@$ver" MIT "$why"
+}
+
+probe "$ROOT" ""
+for dep in "${DEPS[@]}"; do
+  name="${dep%%=*}" co="${dep#*=}"
+  lock="$(awk -v n="$name" '$1 == n {print $3; exit}' "$ROOT/deps.lock" 2>/dev/null || true)"
+  [ -n "$lock" ] || { echo "make-sbom: $ROOT/deps.lock has no $name row" >&2; exit 1; }
+  head="$(git -C "$co" rev-parse HEAD 2>/dev/null || true)"
+  [ "$head" = "$lock" ] || { echo "make-sbom: $co is at '${head:-not a git checkout}', deps.lock locks $name at $lock" >&2; exit 1; }
+  lname="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+  row "$lname" "git-$lock" "pkg:github/LibreSCRS/$name@$lock" LGPL-2.1-or-later "linked statically"
+  probe "$co" "bundled in $name"
+done
+
+python3 - "$OUT" "$REPO" "$version" "$rows" "${REQUIRE[@]}" <<'PY'
+import json, sys
+out, repo, version, rows, *require = sys.argv[1:]
+components, seen = [], set()
+for line in open(rows, encoding="utf-8").read().splitlines():
+    name, ver, purl, lic, why = line.split("\t")
+    if name in seen:
+        continue
+    seen.add(name)
+    c = {"type": "library", "name": name, "version": ver, "purl": purl,
+         "licenses": [{"license": {"id": lic}}]}
+    if why:
+        c["description"] = why
+    components.append(c)
+missing = [r for r in require if r not in seen]
+if not components:
+    print("make-sbom: ERROR: no components -- a bill saying this artefact bundles "
+          "nothing must not be published, let alone signed", file=sys.stderr)
+    raise SystemExit(1)
+if missing:
+    print("make-sbom: ERROR: required component(s) not found in the tree: "
+          + ", ".join(missing), file=sys.stderr)
+    raise SystemExit(1)
+doc = {"bomFormat": "CycloneDX", "specVersion": "1.5", "version": 1,
+       "metadata": {"component": {"type": "application", "name": repo, "version": version,
+                                  "purl": f"pkg:github/LibreSCRS/{repo}@{version}"}},
+       "components": components}
+with open(out, "w", encoding="utf-8") as fh:
+    json.dump(doc, fh, indent=2)
+    fh.write("\n")
+print(f"make-sbom: {len(components)} components ({', '.join(sorted(seen))}) -> {out}")
+PY

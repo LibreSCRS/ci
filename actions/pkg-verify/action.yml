@@ -6,7 +6,9 @@ description: >
   LibreSCRS module for the variant, pkcs11-tool lists slots with no card,
   systemd units verify, D-Bus/polkit files sit on the daemons' paths, the
   direct<->agent switch behaves as documented for the package manager, and
-  lintian/rpmlint findings are all accepted by lint-accepted/.
+  lintian/rpmlint findings are all accepted by lint-accepted/. An optional
+  repository hook adds the repository's own installed-state assertions, run
+  last in the same container.
 
 inputs:
   slug:
@@ -29,7 +31,17 @@ inputs:
     required: false
     default: own
   name:
-    description: "Repository whose packages lint=own means (default: the repository part of github.repository)."
+    description: "Repository whose packages lint=own and hook mean (default: the repository part of github.repository)."
+    required: false
+    default: ''
+  hook:
+    description: >
+      Optional script (a path relative to the workspace, or absolute) with the
+      repository's own installed-state assertions. It runs LAST inside the same
+      clean container, after every stack check, as `bash` with FAMILY=deb|rpm
+      and PKG_MANAGER set, its repository's packages under /pkg and each
+      upstream's under /pkg-<Repository>; exit 0 passes. It may install
+      subsets and remove packages.
     required: false
     default: ''
 
@@ -44,6 +56,7 @@ runs:
         IN_REPORT: ${{ inputs.report }}
         IN_LINT: ${{ inputs.lint }}
         IN_NAME: ${{ inputs.name }}
+        IN_HOOK: ${{ inputs.hook }}
         GH_REPOSITORY: ${{ github.repository }}
       run: |
         set -uo pipefail
@@ -63,6 +76,10 @@ runs:
             ;;
           *) for d in $IN_LINT; do args+=(--lint "$d"); done ;;
         esac
+        if [ -n "$IN_HOOK" ]; then
+          case "$IN_HOOK" in /*) hook="$IN_HOOK" ;; *) hook="$GITHUB_WORKSPACE/$IN_HOOK" ;; esac
+          args+=(--hook "$hook" --name "${IN_NAME:-${GH_REPOSITORY#*/}}")
+        fi
         report="${IN_REPORT:-$RUNNER_TEMP/pkg-verify-report-$IN_SLUG}"
         args+=(--report "$report")
         rc=0
