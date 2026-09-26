@@ -106,7 +106,13 @@ case "${STUB_P11TOOL:-slots}" in
   load)  echo "Available slots:"; echo "error: cannot load module"; exit 1 ;;
 esac
 XEOF
-printf '#!/usr/bin/env bash\ngrep -q BAD "${!#}" && { echo "$(basename "${!#}"): Command /usr/libexec/librescrs-agent is not executable"; exit 1; }; exit 0\n' >"$B/systemd-analyze"
+cat >"$B/systemd-analyze" <<'XEOF'
+#!/usr/bin/env bash
+# like the real one: --user without a runtime directory verifies nothing
+[ "$1" = --user ] && [ ! -d "${XDG_RUNTIME_DIR:-/nonexistent}" ] && { echo "Failed to initialize manager: No such device or address"; exit 1; }
+grep -q BAD "${!#}" && { echo "$(basename "${!#}"): Command /usr/libexec/librescrs-agent is not executable"; exit 1; }
+exit 0
+XEOF
 for t in lintian rpmlint; do printf '#!/bin/sh\nexit 0\n' >"$B/$t"; done
 printf '#!/bin/sh\nexit 0\n' >"$B/timeout.real"
 cat >"$B/timeout" <<'EOF'

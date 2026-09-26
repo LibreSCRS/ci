@@ -76,7 +76,7 @@ esac
 # The distribution tools the checks use. p11-kit is what a desktop has; the
 # rest are the measuring instruments.
 case "$MANAGER" in
-    apt) pm_tools p11-kit file binutils systemd dbus-daemon ;;
+    apt) pm_tools p11-kit file binutils systemd dbus-daemon dbus-user-session ;;
     dnf) pm_tools p11-kit p11-kit-trust file binutils systemd dbus-daemon ;;
     zypper) pm_tools p11-kit p11-kit-tools file binutils systemd dbus-1-daemon ;;
 esac
@@ -161,19 +161,19 @@ else
 fi
 
 # ── S5 ────────────────────────────────────────────────────────────────────
+# The offline verifier needs a runtime directory for --user (without one it
+# prints "Failed to initialize manager" and verifies nothing -- a message a
+# filter would wave through), and the units' own dependencies (dbus.socket of
+# the user bus) installed. Then its exit code is the verdict.
 mapfile -t units < <(for n in "${ours[@]}"; do files_of "$n"; done | grep -E '/systemd/(user|system)/[^/]+\.(service|socket|timer)$' | sort -u)
 if [ "${#units[@]}" -gt 0 ]; then
+    XDG_RUNTIME_DIR="$(mktemp -d)"; export XDG_RUNTIME_DIR
     for u in "${units[@]}"; do
         case "$u" in */systemd/user/*) scope=--user ;; *) scope=--system ;; esac
-        systemd-analyze "$scope" verify --man=no "$u" >"$REPORT/verify-$(basename "$u").txt" 2>&1
-        rc=$?
-        # A unit that is fine still makes the offline verifier complain about
-        # the container (no running manager, no /run/user); what counts is a
-        # complaint that names our unit or our binary.
-        grep -E "$(basename "$u")|/usr/libexec/librescrs" "$REPORT/verify-$(basename "$u").txt" | grep -viE 'not running|No such file or directory.*/run/' >"$REPORT/verify-own.txt"
-        test ! -s "$REPORT/verify-own.txt"; own=$?
-        check "S5 systemd-analyze $scope verify $(basename "$u") (rc=$rc)" "$own"
-        [ -s "$REPORT/verify-own.txt" ] && sed 's/^/     /' "$REPORT/verify-own.txt"
+        v="$REPORT/verify-$(basename "$u").txt"
+        systemd-analyze "$scope" verify --man=no "$u" >"$v" 2>&1; rc=$?
+        check "S5 systemd-analyze $scope verify $(basename "$u") (rc=$rc)" "$rc"
+        [ "$rc" -eq 0 ] || sed 's/^/     /' "$v"
     done
 else
     info "S5 no systemd unit in this stack"
