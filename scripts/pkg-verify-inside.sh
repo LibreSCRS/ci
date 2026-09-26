@@ -56,6 +56,14 @@ apt)
     EXT=deb
     ;;
 dnf)
+    # Fedora's image enables the Cisco openh264 repository; nothing here needs
+    # it and its mirrors fail often enough to redden a run for no reason. It is
+    # switched off in the repository file (not with --disablerepo, which dnf5
+    # refuses for an id the image no longer has), so every dnf call below --
+    # including the ones inside rpm tooling -- skips it.
+    for r in "${PKG_DNF_REPO_DIR:-/etc/yum.repos.d}"/fedora-cisco-openh264*.repo; do
+        if [ -f "$r" ]; then sed -i "s/^enabled=1/enabled=0/" "$r"; fi
+    done
     pm_tools() { dnf -y -q install "$@" >/dev/null; }
     pm_files() { dnf -y install "$@"; }
     is_installed() { rpm -q "$1" >/dev/null 2>&1; }

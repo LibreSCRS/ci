@@ -99,6 +99,10 @@ test -f "$work/out/librescrs-x-5.0.0-1.x86_64.rpm"; got=$?
 expect "openSUSE build: slug dist tag, ninja, no debug package, package collected" "0 0 0 0 0" "$rc $dist $dbg $gen $got"
 grep -q 'install .* ninja ' "$work/rec/pm" && ! grep -q 'ninja-build' "$work/rec/pm"
 expect "openSUSE installs the mapped build dependencies" 0 $?
+tree; mkdir -p "$work/repos"; printf '[fedora-cisco-openh264]\nenabled=1\n' >"$work/repos/fedora-cisco-openh264.repo"
+SLUG=fedora43 build dnf PKG_DNF_REPO_DIR="$work/repos"; rc=$?
+grep -qx 'enabled=0' "$work/repos/fedora-cisco-openh264.repo"; expect "Fedora: the openh264 repository is switched off before any dnf call" "0 0" "$rc $?"
+tree; SLUG=fedora43 build dnf PKG_DNF_REPO_DIR="$work/no-such-dir"; expect "Fedora: an image without that repository builds too" 0 $?
 tree; SLUG=fedora43 build dnf; rc=$?
 ! grep -q -- '--define dist' "$work/rec/rpmbuild" && grep -q -- '--define debug_package %{nil}' "$work/rec/rpmbuild"
 expect "Fedora build keeps its own dist tag, still no debug package" "0 0" "$rc $?"
