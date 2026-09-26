@@ -1,0 +1,509 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# release-train <version> [--rehearse-only] [--resume] [--prepare]
+#               [--root <dir>] [--ledger <file>]
+#
+# The whole LibreSCRS release, from one local command, in the order the
+# repositories build each other:
+#
+#   0 preflight  all eight clones clean, on main, HEAD == origin main; CI green
+#                on each HEAD; VERSION and the CHANGELOG section say <version>
+#                in the seven code repositories; no tag and no release
+#                <version> yet; gh authenticated; the release key healthy
+#                (primary and signing subkey valid for more than six months,
+#                secret present) and unlocked in the agent; bump-deps check.
+#   1 lock       per layer: bump-deps to-head where a lock is behind (and, with
+#                --prepare, the CHANGELOG heading renamed to "[<version>] —
+#                <date>"), the diff shown, ONE question per layer, push, wait
+#                for CI. A layer is locked against the upstream main the layer
+#                before it has just pushed.
+#   2 freeze     again: every HEAD == origin main, nothing behind, bump-deps
+#                check; the eight SHAs go into the ledger. From here on main
+#                must not move -- a --resume that finds it moved stops.
+#   3 rehearse   `release.yml mode=rehearse` dispatched on main in all seven,
+#                every run waited for; one red run stops the train.
+#   4 tag        per layer LM -> LA -> {LL, LD} -> {LC, LK} -> LMAC:
+#                `bump-deps check --tag` for the consumer, `git tag -s` on the
+#                frozen commit, verify-release-tag.sh (the release workflow's
+#                own judgement, fresh keyring from KEYS), ONE question per
+#                layer, push the tag, wait for its release run, read the
+#                release back (check-release-assets --published-strict), then
+#                download it and run release-seal.sh verify-release
+#                (sha256sum -c, cosign verify-blob against the tag's identity,
+#                gh attestation verify).
+#   5 site       gen-artifacts-data --ref <version>, check_download_claims,
+#                commit, ONE question, push, wait for the deploy, and the
+#                English and Serbian download pages must name <version>.
+#   6 ledger     every step, SHA, run id and verdict, in the ledger file.
+#
+# --rehearse-only runs 0, 2 and 3 and pushes nothing. --resume continues a
+# train from its ledger: a step recorded as done is not redone, a tag that
+# exists locally is reused (and judged again), and the frozen SHAs must still
+# be the HEADs. Without --resume an existing ledger is refused.
+#
+# Nothing is pushed without the literal answer `yes`, typed on the terminal
+# (the prompt reads /dev/tty; there is no flag that answers for you). The
+# self-test alone points RELEASE_TRAIN_TTY at a file of answers.
+#
+# Environment: LIBRESCRS_ROOT (the directory holding the eight clones side by
+# side; --root wins; default: the parent of this script's checkout),
+# EXPECTED_FPR (the release key's primary fingerprint), RELEASE_TRAIN_ORG
+# (default LibreSCRS), BUMP_DEPS (default: bump-deps beside this script),
+# RELEASE_TRAIN_POLL (seconds between polls, default 15),
+# RELEASE_TRAIN_WAIT (seconds to wait for a run to appear, default 600),
+# SITE_URL_EN / SITE_URL_SR (the two download pages).
+#
+# Exit: 0 done - 1 a check failed, a run was red, or an answer was not `yes`
+#       (the train stops where it is; --resume continues) - 2 cannot judge
+#       (a tool, a clone or the bump-deps tool missing; a usage error; a ledger
+#       from another train).
+set -uo pipefail
+
+[ "${BASH_VERSINFO[0]:-0}" -ge 4 ] || { echo "release-train: needs bash >= 4" >&2; exit 2; }
+
+here="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+ORG="${RELEASE_TRAIN_ORG:-LibreSCRS}"
+EXPECTED_FPR="${EXPECTED_FPR:-6B05889AC9A6A7188DF639B06F27A989C2031D16}"
+BUMP_DEPS="${BUMP_DEPS:-$here/bump-deps}"
+POLL="${RELEASE_TRAIN_POLL:-15}"
+WAIT="${RELEASE_TRAIN_WAIT:-600}"
+SITE_URL_EN="${SITE_URL_EN:-https://librescrs.github.io/downloads/}"
+SITE_URL_SR="${SITE_URL_SR:-https://librescrs.github.io/sr/downloads/}"
+TTY="${RELEASE_TRAIN_TTY:-/dev/tty}"
+SIX_MONTHS=$((183 * 86400))
+
+LAYERS=("LibreMiddleware" "LibreAgent" "LibreLinux LibreDarwin" "LibreCelik LibreKDE" "LibreMac")
+CODE=(LibreMiddleware LibreAgent LibreLinux LibreDarwin LibreCelik LibreKDE LibreMac)
+SITE=LibreSCRS.github.io
+ALL=("${CODE[@]}" "$SITE")
+
+die() { echo "release-train: $*" >&2; exit "${RC:-1}"; }
+cannot() { RC=2 die "$* -- cannot judge"; }
+usage() { RC=2 die "usage: release-train <version> [--rehearse-only] [--resume] [--prepare] [--root <dir>] [--ledger <file>]"; }
+say() { printf '\n== %s\n' "$*"; }
+
+# ------------------------------------------------------------- arguments --
+V="" REHEARSE_ONLY=0 RESUME=0 PREPARE=0 ROOT="${LIBRESCRS_ROOT:-}" LEDGER=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --rehearse-only) REHEARSE_ONLY=1 ;;
+        --resume) RESUME=1 ;;
+        --prepare) PREPARE=1 ;;
+        --root) [ "$#" -ge 2 ] || usage; ROOT=$2; shift ;;
+        --ledger) [ "$#" -ge 2 ] || usage; LEDGER=$2; shift ;;
+        -*) usage ;;
+        *) [ -z "$V" ] || usage; V=$1 ;;
+    esac
+    shift
+done
+[ -n "$V" ] || usage
+[[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] || RC=2 die "'$V' is not a version"
+[ "$REHEARSE_ONLY" = 0 ] || [ "$PREPARE" = 0 ] || RC=2 die "--prepare pushes; it cannot be combined with --rehearse-only"
+if [ -z "$ROOT" ]; then
+    ROOT="$(dirname -- "$(git -C "$here" rev-parse --show-toplevel 2>/dev/null || echo "$here/..")")"
+fi
+ROOT="$(cd -- "$ROOT" 2>/dev/null && pwd)" || cannot "the clone root '$ROOT' is not a directory"
+LEDGER="${LEDGER:-$ROOT/release-train-$V.ledger}"
+for t in git gh gpg gpg-connect-agent cosign python3 curl; do
+    command -v "$t" >/dev/null 2>&1 || cannot "$t is not on PATH"
+done
+[ -f "$BUMP_DEPS" ] || cannot "no bump-deps at $BUMP_DEPS"
+for r in "${ALL[@]}"; do
+    git -C "$ROOT/$r" rev-parse --git-dir >/dev/null 2>&1 || cannot "$ROOT/$r is not a git clone"
+done
+echo "release-train $V over $ROOT (ledger $LEDGER)"
+
+# ---------------------------------------------------------------- ledger --
+# One line per event: <step> <repo> <status> <detail...>. `done` lines are
+# what --resume trusts; everything else is the record.
+if [ -s "$LEDGER" ] && [ "$RESUME" = 0 ]; then
+    RC=2 die "$LEDGER exists -- a train for $V already ran; continue it with --resume, or move the ledger away"
+fi
+if [ "$RESUME" = 1 ] && [ -s "$LEDGER" ] && ! grep -qx "train $V started" "$LEDGER"; then
+    RC=2 die "$LEDGER is not a ledger of release $V"
+fi
+[ -s "$LEDGER" ] || printf 'train %s started\n' "$V" > "$LEDGER"
+ledger() { printf '%s %s %s %s\n' "$1" "$2" "$3" "${4:-}" >> "$LEDGER"; }
+done_in_ledger() { grep -q "^$1 $2 done" "$LEDGER"; }
+ledger_detail() { awk -v s="$1" -v r="$2" '$1==s && $2==r && $3=="done" { d=$4 } END { print d }' "$LEDGER"; }
+ledger train "$V" "invoked" "rehearse-only=$REHEARSE_ONLY resume=$RESUME prepare=$PREPARE at $(date -u +%FT%TZ)"
+
+# ------------------------------------------------------------------ asks --
+# The only way past a push. Exactly `yes`; anything else stops the train.
+ask() {
+    local answer=""
+    printf '\n%s\nType yes to continue: ' "$1"
+    # One descriptor for the whole train, so each question reads the next line.
+    if [ -z "${TTY_FD_OPEN:-}" ]; then
+        exec 9<"$TTY" || die "cannot read answers from $TTY"
+        TTY_FD_OPEN=1
+    fi
+    if ! IFS= read -r answer <&9; then answer=""; fi
+    echo
+    if [ "$answer" != yes ]; then
+        ledger ask "-" declined "$1"
+        die "not confirmed -- nothing pushed; rerun with --resume to continue from here"
+    fi
+    ledger ask "-" yes "$1"
+}
+
+slug() { printf '%s/%s' "$ORG" "$1"; }
+remote_main() { git -C "$ROOT/$1" ls-remote origin refs/heads/main 2>/dev/null | awk '$2=="refs/heads/main"{print $1}'; }
+ci_workflow() { if [ "$1" = "$SITE" ]; then echo deploy.yml; else echo ci.yml; fi; }
+
+# json <python-expression over d> < json: a tiny jq, so jq is not required.
+json() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
+
+# run_ids <repo> <workflow> <sha> <event>: every run id, newest first.
+run_ids() {
+    gh run list -R "$(slug "$1")" --workflow "$2" --commit "$3" --event "$4" --limit 50 \
+        --json databaseId,status,conclusion 2>/dev/null \
+        | json "'\\n'.join(str(r['databaseId']) for r in d)"
+}
+
+# wait_new_run <repo> <workflow> <sha> <event> <ids-before>: the id of a run
+# that was not there before, once it appears.
+wait_new_run() {
+    local repo=$1 wf=$2 sha=$3 ev=$4 before=$5 i id tries
+    tries=$(( WAIT / (POLL > 0 ? POLL : 1) ))
+    for ((i = 0; i <= tries; i++)); do
+        for id in $(run_ids "$repo" "$wf" "$sha" "$ev"); do
+            case " $before " in *" $id "*) ;; *) printf '%s' "$id"; return 0 ;; esac
+        done
+        [ "$i" -lt "$tries" ] && sleep "$POLL"
+    done
+    return 1
+}
+
+watch_run() {  # watch_run <repo> <id>: 0 when the run concluded success
+    gh run watch "$2" -R "$(slug "$1")" --exit-status --interval "$((POLL > 0 ? POLL : 1))" >/dev/null 2>&1
+}
+
+# ci_green <repo> <sha>: the newest run of the repository's CI workflow on
+# that commit concluded success.
+ci_green() {
+    local out
+    out="$(gh run list -R "$(slug "$1")" --workflow "$(ci_workflow "$1")" --commit "$2" --limit 1 \
+            --json status,conclusion 2>/dev/null)" || return 1
+    printf '%s' "$out" | json "'ok' if d and d[0]['status']=='completed' and d[0]['conclusion']=='success' else 'no'" \
+        | grep -qx ok
+}
+
+# wait_ci <repo> <sha>: CI for a commit this train pushed, waited for.
+wait_ci() {
+    local id
+    id="$(wait_new_run "$1" "$(ci_workflow "$1")" "$2" push "")" \
+        || { echo "::error::$1: no $(ci_workflow "$1") run for ${2:0:12} appeared"; return 1; }
+    watch_run "$1" "$id" || { echo "::error::$1: $(ci_workflow "$1") run $id for ${2:0:12} is red"; return 1; }
+    ledger ci "$1" "done" "$2 run=$id"
+    echo "  $1: $(ci_workflow "$1") run $id green on ${2:0:12}"
+}
+
+# ------------------------------------------------------------ preflight --
+key_health() {
+    local now listing sub grip cached
+    now="$(date +%s)"
+    listing="$(gpg --batch --with-colons --with-keygrip --list-secret-keys "$EXPECTED_FPR" 2>/dev/null)" \
+        || { echo "::error::no secret key $EXPECTED_FPR in this keyring"; return 1; }
+    # The primary, then the newest valid signing subkey with its secret here.
+    read -r sub grip < <(printf '%s\n' "$listing" | awk -F: -v now="$now" -v min="$SIX_MONTHS" '
+        $1=="sec" { if ($7 != "" && $7 - now < min) { print "PRIMARY-EXPIRES " $7; exit } }
+        $1=="ssb" { cand = ($12 ~ /s/ && $2 !~ /[reid]/ && $15 != "#") ; ex = $7; want = 0; next }
+        $1=="fpr" && cand { fp = $10; want = 1; next }
+        $1=="grp" && want { if (ex == "" || ex - now >= min) { best = fp " " $10 } else { short = fp " " ex }; cand = 0; want = 0 }
+        END { if (best != "") print best; else if (short != "") print "SUBKEY-EXPIRES " short; }')
+    case "$sub" in
+        PRIMARY-EXPIRES)
+            echo "::error::the release key's primary expires $(date -u -d "@$grip" +%F 2>/dev/null || echo "$grip") -- less than six months away"; return 1 ;;
+        SUBKEY-EXPIRES)
+            echo "::error::the release key's signing subkey expires in less than six months"; return 1 ;;
+        "")
+            echo "::error::no valid signing subkey with its secret for $EXPECTED_FPR"; return 1 ;;
+    esac
+    cached="$(gpg-connect-agent 'keyinfo --list' /bye 2>/dev/null | awk -v g="$grip" '$1=="S" && $3==g { print $7 }')"
+    if [ "$cached" != 1 ]; then
+        echo "  the signing subkey is not unlocked in gpg-agent -- asking pinentry once"
+        printf 'release-train unlock\n' | gpg --local-user "$sub!" --clearsign >/dev/null 2>&1 || true
+        cached="$(gpg-connect-agent 'keyinfo --list' /bye 2>/dev/null | awk -v g="$grip" '$1=="S" && $3==g { print $7 }')"
+        [ "$cached" = 1 ] || { echo "::error::the signing subkey ${sub:0:16} is not unlocked in gpg-agent"; return 1; }
+    fi
+    echo "  release key: signing subkey ${sub:0:16}... valid beyond six months, unlocked"
+}
+
+preflight() {
+    say "0 preflight"
+    local r bad=0 head rm br
+    gh auth status >/dev/null 2>&1 || cannot "gh is not authenticated"
+    for r in "${ALL[@]}"; do
+        head="$(git -C "$ROOT/$r" rev-parse HEAD)"
+        br="$(git -C "$ROOT/$r" symbolic-ref -q --short HEAD || echo '(detached)')"
+        rm="$(remote_main "$r")"
+        if [ -n "$(git -C "$ROOT/$r" status --porcelain)" ]; then
+            echo "::error::$r: the working tree is not clean"; bad=1; continue
+        fi
+        [ "$br" = main ] || { echo "::error::$r: on $br, not main"; bad=1; continue; }
+        if [ "$head" != "$rm" ]; then
+            echo "::error::$r: HEAD ${head:0:12} is not origin main ${rm:0:12}"; bad=1; continue
+        fi
+        if ! ci_green "$r" "$head"; then
+            echo "::error::$r: $(ci_workflow "$r") is not green on ${head:0:12}"; bad=1; continue
+        fi
+        echo "  $r: clean, main == origin ${head:0:12}, CI green"
+    done
+    for r in "${CODE[@]}"; do
+        REPO_ROOT="$ROOT/$r" bash "$here/check-version.sh" --arms lockstep --version "$V" >/dev/null 2>&1 \
+            || { echo "::error::$r: VERSION or the CHANGELOG section does not say $V"; bad=1; }
+        if ! done_in_ledger tag "$r"; then
+            if [ -n "$(git -C "$ROOT/$r" ls-remote --tags origin "refs/tags/$V" 2>/dev/null)" ]; then
+                echo "::error::$r: tag $V already exists on origin"; bad=1
+            fi
+            if gh release view "$V" -R "$(slug "$r")" --json isDraft >/dev/null 2>&1; then
+                echo "::error::$r: a release (or draft) $V already exists"; bad=1
+            fi
+        fi
+    done
+    if [ "$REHEARSE_ONLY" = 0 ]; then
+        key_health || bad=1
+    fi
+    "$BUMP_DEPS" check --workspace "$ROOT" >"$ROOT/.release-train-bump.log" 2>&1 \
+        || { sed 's/^/  | /' "$ROOT/.release-train-bump.log"; echo "::error::bump-deps check is not green"; bad=1; }
+    rm -f "$ROOT/.release-train-bump.log"
+    [ "$bad" = 0 ] || die "preflight failed -- nothing was changed"
+    ledger preflight "-" "done"
+}
+
+# ----------------------------------------------------------------- lock --
+behind_repos() {  # the given consumers whose locks are behind upstream main; "?<repo>" when unknown
+    "$BUMP_DEPS" status --workspace "$ROOT" "$@" 2>/dev/null \
+        | awk -v want=" $* " '
+            index(want, " " $1 " ") && NF >= 5 {
+                if ($5 ~ /^[0-9]+$/) { if ($5 > 0) print $1 }
+                else print "?" $1
+            }' \
+        | sort -u
+}
+
+prepare_changelog() {  # prepare_changelog <repo>: 1 commit, or nothing when already renamed
+    local r=$1 f="$ROOT/$1/CHANGELOG.md" date
+    date="$(date -u +%F)"
+    grep -q "^## \[$V\]" "$f" && return 0
+    grep -q "^## \[Unreleased\] — $V\$" "$f" \
+        || { echo "::error::$r: CHANGELOG.md has no '## [Unreleased] — $V' heading to rename"; return 1; }
+    python3 - "$f" "$V" "$date" <<'PY'
+import sys
+p, v, d = sys.argv[1:4]
+t = open(p, encoding="utf-8").read()
+t = t.replace("## [Unreleased] — %s\n" % v, "## [%s] — %s\n" % (v, d), 1)
+open(p, "w", encoding="utf-8").write(t)
+PY
+    git -C "$ROOT/$r" commit -q -m "Release $V" -- CHANGELOG.md \
+        || { echo "::error::$r: could not commit the CHANGELOG heading"; return 1; }
+}
+
+lock() {
+    say "1 lock"
+    local layer r n ahead rm need
+    for layer in "${LAYERS[@]}"; do
+        # shellcheck disable=SC2086  # a layer is a word list
+        set -- $layer
+        need="$(behind_repos "$@")"
+        case "$need" in *"?"*) die "bump-deps status could not tell whether $* are behind" ;; esac
+        if [ -n "$need" ]; then
+            # shellcheck disable=SC2086  # one repository per word
+            echo "  behind:" $need
+            # shellcheck disable=SC2086
+            "$BUMP_DEPS" to-head --workspace "$ROOT" $need || die "bump-deps to-head failed for: ${need//$'\n'/ }"
+        fi
+        if [ "$PREPARE" = 1 ]; then
+            for r in "$@"; do prepare_changelog "$r" || die "prepare failed"; done
+        fi
+        ahead=()
+        for r in "$@"; do
+            rm="$(remote_main "$r")"
+            n="$(git -C "$ROOT/$r" rev-list --count "$rm..HEAD" 2>/dev/null || echo 0)"
+            if [ "$n" -gt 0 ]; then
+                ahead+=("$r")
+                echo "  $r: $n commit(s) on top of origin main"
+                git -C "$ROOT/$r" log --oneline "$rm..HEAD" | sed 's/^/    /'
+                git -C "$ROOT/$r" diff --stat "$rm" HEAD | sed 's/^/    /'
+            fi
+        done
+        [ "${#ahead[@]}" -gt 0 ] || { echo "  layer $*: nothing to lock"; continue; }
+        ask "Push the commits above to main of: ${ahead[*]}?"
+        for r in "${ahead[@]}"; do
+            git -C "$ROOT/$r" push -q origin HEAD:refs/heads/main || die "$r: push to main failed"
+            ledger lock "$r" "done" "$(git -C "$ROOT/$r" rev-parse HEAD)"
+        done
+        for r in "${ahead[@]}"; do
+            wait_ci "$r" "$(git -C "$ROOT/$r" rev-parse HEAD)" || die "CI red after the lock push"
+        done
+    done
+}
+
+# --------------------------------------------------------------- freeze --
+freeze() {
+    say "2 freeze"
+    local r head rm bad=0 prior need
+    for r in "${ALL[@]}"; do
+        head="$(git -C "$ROOT/$r" rev-parse HEAD)"; rm="$(remote_main "$r")"
+        [ "$head" = "$rm" ] || { echo "::error::$r: HEAD ${head:0:12} != origin main ${rm:0:12}"; bad=1; continue; }
+        prior="$(ledger_detail freeze "$r")"
+        if [ -n "$prior" ] && [ "$prior" != "$head" ]; then
+            echo "::error::$r: main moved after the freeze (${prior:0:12} -> ${head:0:12})"; bad=1; continue
+        fi
+    done
+    need="$(behind_repos "${CODE[@]}")"
+    [ -z "$need" ] || { echo "::error::locks behind upstream main: ${need//$'\n'/ }"; bad=1; }
+    "$BUMP_DEPS" check --workspace "$ROOT" >/dev/null 2>&1 || { echo "::error::bump-deps check is not green"; bad=1; }
+    [ "$bad" = 0 ] || die "freeze failed"
+    for r in "${ALL[@]}"; do
+        done_in_ledger freeze "$r" || ledger freeze "$r" "done" "$(git -C "$ROOT/$r" rev-parse HEAD)"
+        echo "  $r frozen at $(ledger_detail freeze "$r" | cut -c1-12)"
+    done
+}
+
+# ------------------------------------------------------------- rehearse --
+rehearse() {
+    say "3 rehearse"
+    local r sha before id pending=() bad=0
+    declare -A BEFORE=() RUN=()
+    for r in "${CODE[@]}"; do
+        done_in_ledger rehearse "$r" && { echo "  $r: rehearsed earlier (run $(ledger_detail rehearse "$r"))"; continue; }
+        sha="$(ledger_detail freeze "$r")"
+        BEFORE[$r]="$(run_ids "$r" release.yml "$sha" workflow_dispatch | tr '\n' ' ')"
+        gh workflow run release.yml -R "$(slug "$r")" --ref main -f mode=rehearse >/dev/null 2>&1 \
+            || die "$r: could not dispatch release.yml"
+        pending+=("$r")
+    done
+    for r in "${pending[@]}"; do
+        sha="$(ledger_detail freeze "$r")"
+        id="$(wait_new_run "$r" release.yml "$sha" workflow_dispatch "${BEFORE[$r]}")" \
+            || { echo "::error::$r: the rehearsal run never appeared"; bad=1; continue; }
+        RUN[$r]=$id
+    done
+    for r in "${pending[@]}"; do
+        [ -n "${RUN[$r]:-}" ] || continue
+        if watch_run "$r" "${RUN[$r]}"; then
+            ledger rehearse "$r" "done" "${RUN[$r]}"
+            echo "  $r: rehearsal run ${RUN[$r]} green"
+        else
+            echo "::error::$r: rehearsal run ${RUN[$r]} is red"; ledger rehearse "$r" red "${RUN[$r]}"; bad=1
+        fi
+    done
+    [ "$bad" = 0 ] || die "a rehearsal is red -- nothing was tagged"
+}
+
+# ------------------------------------------------------------------ tag --
+tag_layer() {
+    local r sha obj before id tmp
+    local -a todo=()
+    for r in "$@"; do
+        done_in_ledger verified "$r" && { echo "  $r: $V tagged and verified earlier"; continue; }
+        sha="$(ledger_detail freeze "$r")"
+        "$BUMP_DEPS" check --root "$ROOT/$r" --tag "$V" >/dev/null 2>&1 \
+            || die "$r: bump-deps check --tag $V is not green -- its locks do not name the upstream tags"
+        if git -C "$ROOT/$r" rev-parse -q --verify "refs/tags/$V" >/dev/null; then
+            obj="$(git -C "$ROOT/$r" rev-parse "refs/tags/$V^{commit}")"
+            [ "$obj" = "$sha" ] || die "$r: an existing local tag $V points at ${obj:0:12}, not the frozen ${sha:0:12}"
+            echo "  $r: reusing the local tag $V"
+        else
+            git -C "$ROOT/$r" tag -s -u "$EXPECTED_FPR" -m "$r $V" "$V" "$sha" \
+                || die "$r: git tag -s failed"
+        fi
+        EXPECTED_FPR="$EXPECTED_FPR" REPO_ROOT="$ROOT/$r" bash "$here/verify-release-tag.sh" tag "$V" \
+            || die "$r: the local tag $V does not pass the release workflow's signature check -- not pushed"
+        todo+=("$r")
+    done
+    [ "${#todo[@]}" -gt 0 ] || return 0
+    ask "Push tag $V to: ${todo[*]}? (each starts its release)"
+    declare -A BEFORE=()
+    for r in "${todo[@]}"; do
+        sha="$(ledger_detail freeze "$r")"
+        BEFORE[$r]="$(run_ids "$r" release.yml "$sha" push | tr '\n' ' ')"
+        if ! done_in_ledger tag "$r"; then
+            git -C "$ROOT/$r" push -q origin "refs/tags/$V" || die "$r: pushing tag $V failed"
+            ledger tag "$r" "done" "$(git -C "$ROOT/$r" rev-parse "refs/tags/$V")"
+        fi
+    done
+    for r in "${todo[@]}"; do
+        sha="$(ledger_detail freeze "$r")"
+        id="$(wait_new_run "$r" release.yml "$sha" push "${BEFORE[$r]}")" \
+            || die "$r: no release run for tag $V appeared"
+        watch_run "$r" "$id" || { ledger release "$r" red "$id"; die "$r: release run $id for $V is red"; }
+        ledger release "$r" "done" "$id"
+        GITHUB_REPOSITORY="$(slug "$r")" REPO_ROOT="$ROOT/$r" \
+            bash "$here/check-release-assets.sh" --published-strict "$V" \
+            || die "$r: the published release $V is not the declared set"
+        tmp="$(mktemp -d "${TMPDIR:-/var/tmp}/release-train-dl.XXXXXX")"
+        if ! gh release download "$V" -R "$(slug "$r")" -D "$tmp" >/dev/null 2>&1 \
+                && [ -n "$(gh release view "$V" -R "$(slug "$r")" --json assets \
+                            | json "' '.join(a['name'] for a in d['assets'])")" ]; then
+            rm -rf "$tmp"; die "$r: could not download release $V"
+        fi
+        if ! bash "$here/release-seal.sh" verify-release "$tmp" "$(slug "$r")" "refs/tags/$V"; then
+            rm -rf "$tmp"; die "$r: the downloaded release $V does not verify"
+        fi
+        rm -rf "$tmp"
+        ledger verified "$r" "done" "release=$id"
+        echo "  $r: $V released (run $id) and verified from the download"
+    done
+}
+
+tags() {
+    say "4 tag"
+    local layer
+    for layer in "${LAYERS[@]}"; do
+        # shellcheck disable=SC2086
+        tag_layer $layer
+    done
+}
+
+# ----------------------------------------------------------------- site --
+site() {
+    say "5 site"
+    local s="$ROOT/$SITE" head rm url page
+    if ! done_in_ledger site "$SITE"; then
+        ( cd "$s" && python3 tools/gen-artifacts-data.py --repos-root "$ROOT" --ref "$V" ) \
+            || die "gen-artifacts-data --ref $V failed"
+        ( cd "$s" && python3 tools/check_download_claims.py content data/artifacts.json --repos-root "$ROOT" --ref "$V" ) \
+            || die "the download pages do not match release $V"
+        if [ -n "$(git -C "$s" status --porcelain)" ]; then
+            { git -C "$s" add -A data content && git -C "$s" commit -q -m "Downloads: release $V"; } \
+                || die "could not commit the site data"
+        fi
+        rm="$(remote_main "$SITE")"
+        head="$(git -C "$s" rev-parse HEAD)"
+        if [ "$head" != "$rm" ]; then
+            git -C "$s" log --oneline "$rm..HEAD" | sed 's/^/    /'
+            git -C "$s" diff --stat "$rm" HEAD | sed 's/^/    /'
+            ask "Push the site commit above to main (publishes the download pages for $V)?"
+            git -C "$s" push -q origin HEAD:refs/heads/main || die "site push failed"
+            wait_ci "$SITE" "$head" || die "the site deploy is red"
+        fi
+        ledger site "$SITE" "done" "$head"
+    fi
+    for url in "$SITE_URL_EN" "$SITE_URL_SR"; do
+        page="$(curl -fsSL "$url" 2>/dev/null)" || die "$url does not load"
+        printf '%s' "$page" | grep -qF -- "$V" || die "$url does not name $V yet"
+        echo "  $url names $V"
+    done
+    ledger pages "$SITE" "done" "$SITE_URL_EN $SITE_URL_SR"
+}
+
+# ----------------------------------------------------------------- main --
+preflight
+if [ "$REHEARSE_ONLY" = 0 ]; then lock; fi
+freeze
+rehearse
+if [ "$REHEARSE_ONLY" = 1 ]; then
+    ledger train "$V" "done" "rehearse-only"
+    say "rehearse-only: every rehearsal green on the frozen mains; nothing was pushed"
+    exit 0
+fi
+tags
+site
+ledger train "$V" "done" "released"
+say "6 ledger"
+cat "$LEDGER"
+echo
+echo "release-train: $V released in ${#CODE[@]} repositories and on the site"
