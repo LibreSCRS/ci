@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# The runtime RPM of the LibreAgent Qt client library. The three openSUSE rows
+# are that distribution's archive policy (per-SONAME library packages, ldconfig
+# scriptlets); SPEC D18 accepts them for a package published outside the
+# openSUSE Build Service archive.
+rpmlint opensuse* shlib-policy-name-error * -- third-party package, not in the OBS archive: one runtime package carries the client library soname (SPEC D18) [owner 2026-09-26]
+rpmlint opensuse* library-without-ldconfig-postin * -- third-party package, not in the OBS archive: the rpm ldconfig file trigger runs ldconfig (SPEC D18) [owner 2026-09-26]
+rpmlint opensuse* library-without-ldconfig-postun * -- third-party package, not in the OBS archive: the rpm ldconfig file trigger runs ldconfig (SPEC D18) [owner 2026-09-26]
