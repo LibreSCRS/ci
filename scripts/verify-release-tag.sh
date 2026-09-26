@@ -74,7 +74,9 @@ root="${REPO_ROOT:-${GITHUB_WORKSPACE:-}}"
 KEYS_FILE="${KEYS_FILE:-$root/KEYS}"
 [ -f "$KEYS_FILE" ] || cannot "no KEYS at $KEYS_FILE -- a release tag cannot be verified without the published release public key"
 
-work="$(mktemp -d "${TMPDIR:-/var/tmp}/verify-release-tag.XXXXXX")" || cannot "mktemp failed"
+# /var/tmp, not $TMPDIR: gpg-agent's socket lives under GNUPGHOME and macOS
+# caps a socket path at 104 bytes, which /var/folders/... alone nearly spends.
+work="$(mktemp -d /var/tmp/verify-release-tag.XXXXXX)" || cannot "mktemp failed"
 # shellcheck disable=SC2329  # invoked by the EXIT trap
 cleanup() {
     GNUPGHOME="$work/keyring" gpgconf --kill all >/dev/null 2>&1 || true

@@ -21,7 +21,9 @@ here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 subject="$here/release-train"
 [ -f "$subject" ] || { echo "missing subject: $subject" >&2; exit 2; }
 for t in git gpg python3; do command -v "$t" >/dev/null 2>&1 || { echo "$t is not on PATH -- cannot run" >&2; exit 2; }; done
-base=/var/tmp/ci-kapije; [ -d "$base" ] && [ -w "$base" ] || base="${TMPDIR:-/var/tmp}"
+# Never $TMPDIR: on macOS it is a long /var/folders path, and the gpg-agent
+# sockets under each GNUPGHOME here would pass the 104-byte socket limit.
+base=/var/tmp/ci-kapije; [ -d "$base" ] && [ -w "$base" ] || base=/var/tmp
 top="$(mktemp -d "$base/rt-selftest-XXXXXX")" || exit 2
 cleanup() {
     local d

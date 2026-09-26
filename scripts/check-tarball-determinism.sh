@@ -132,7 +132,7 @@ fi
 census() {  # census <tarball> <label>
     local t=$1 label=$2 lst total okt oko okm gh first names sorted order
     lst=$("$TAR" --utc --full-time -tvzf "$t") || return 2
-    total=$(printf '%s\n' "$lst" | wc -l)
+    total=$(printf '%s\n' "$lst" | wc -l | tr -d ' ')
     okt=$(printf '%s\n' "$lst" | grep -cF " $want ")
     oko=$(printf '%s\n' "$lst" | awk '{print $2}' | grep -cxE '0/0|root/root')
     # The closed set is the IMAGE of --mode='go-w,a+rX': 755 for a directory
