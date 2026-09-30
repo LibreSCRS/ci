@@ -288,19 +288,26 @@ behind_repos() {  # the given consumers whose locks are behind upstream main; "?
 }
 
 prepare_changelog() {  # prepare_changelog <repo>: 1 commit, or nothing when already renamed
-    local r=$1 f="$ROOT/$1/CHANGELOG.md" date
+    local r=$1 f="$ROOT/$1/CHANGELOG.md" date metainfo
     date="$(date -u +%F)"
     grep -q "^## \[$V\]" "$f" && return 0
     grep -q "^## \[Unreleased\] — $V\$" "$f" \
         || { echo "::error::$r: CHANGELOG.md has no '## [Unreleased] — $V' heading to rename"; return 1; }
-    python3 - "$f" "$V" "$date" <<'PY'
-import sys
+    # An AppStream <release> entry for this version gets the same date as the
+    # heading, so software centres do not show the day the entry was written.
+    mapfile -t metainfo < <(git -C "$ROOT/$r" ls-files '*.metainfo.xml')
+    python3 - "$f" "$V" "$date" "${metainfo[@]/#/$ROOT/$r/}" <<'PY'
+import re, sys
 p, v, d = sys.argv[1:4]
 t = open(p, encoding="utf-8").read()
 t = t.replace("## [Unreleased] — %s\n" % v, "## [%s] — %s\n" % (v, d), 1)
 open(p, "w", encoding="utf-8").write(t)
+for m in sys.argv[4:]:
+    t = open(m, encoding="utf-8").read()
+    t = re.sub(r'(<release version="%s" date=")[^"]*(")' % re.escape(v), r"\g<1>%s\2" % d, t)
+    open(m, "w", encoding="utf-8").write(t)
 PY
-    git -C "$ROOT/$r" commit -q -m "Release $V" -- CHANGELOG.md \
+    git -C "$ROOT/$r" commit -q -m "Release $V" -- CHANGELOG.md "${metainfo[@]}" \
         || { echo "::error::$r: could not commit the CHANGELOG heading"; return 1; }
 }
 

@@ -214,6 +214,12 @@ PYG
                 *) printf '*.orig.tar.gz  source\nSHA256SUMS  sums\n*.sigstore.json  bundles\n' > "$d/ci/release-assets.txt" ;;
             esac
             case "$r" in
+                LibreKDE)  # an AppStream entry --prepare dates, beside an older one it leaves
+                    mkdir -p "$d/packaging/appstream"
+                    printf '<releases>\n<release version="%s" date="2000-01-01"/>\n<release version="4.2.0" date="2000-01-01"/>\n</releases>\n' "$V" \
+                        > "$d/packaging/appstream/x.metainfo.xml" ;;
+            esac
+            case "$r" in
                 LibreAgent)  # what the vendored LibreMac contract is regenerated from
                     mkdir -p "$d/wire" "$d/include/LibreSCRS/Agent/operations"
                     echo '{"schema":1,"vocabularies":{}}' > "$d/wire/wire-vocabulary.json"
@@ -440,6 +446,11 @@ assert "T23 every origin CHANGELOG now heads [$V] — <date>" bash -c '
     for r in LibreMiddleware LibreAgent LibreLinux LibreDarwin LibreCelik LibreKDE LibreMac; do
         git --git-dir="$1/$r.git" show "$2:CHANGELOG.md" | grep -q "^## \[$2\] — [0-9-]*\$" || exit 1
     done' _ "$W/remotes" "$V"
+assert "T23 the $V AppStream entry carries the heading's date, the older one keeps its own" bash -c '
+    x="$(git --git-dir="$1/LibreKDE.git" show "$2:packaging/appstream/x.metainfo.xml")"
+    d="$(git --git-dir="$1/LibreKDE.git" show "$2:CHANGELOG.md" | sed -n "s/^## \[$2\] — //p")"
+    grep -qF "<release version=\"$2\" date=\"$d\"/>" <<<"$x" &&
+    grep -qF "<release version=\"4.2.0\" date=\"2000-01-01\"/>" <<<"$x"' _ "$W/remotes" "$V"
 
 # T24 -- the consumer's locks do not name the upstream tags at tag time.
 # T24 -- a lock in the old four-column form: under the old tool it passed every
