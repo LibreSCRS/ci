@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # selftest-platforms: linux  (packages are built and judged in Linux containers)
 # Self-test for pkg-images: the real lock is well-formed, and every way a lock
-# can rot (short digest, moving tool URL, duplicate slug, unknown manager, a
-# tool whose bytes changed) is a red, not a pass.
+# can rot (short digest, duplicate slug, unknown manager, a row kind it does
+# not know) is a red, not a pass.
 # shellcheck disable=SC2319  # "assert; read its status" is the pattern here, on purpose
 set -uo pipefail
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,8 +32,6 @@ run family fedora44; expect "family fedora44 answers" 0 $?
 run family ubuntu2604; [ "$(cat "$work/out")" = deb ]; expect "ubuntu2604 is deb" 0 $?
 run manager opensusetw; [ "$(cat "$work/out")" = zypper ]; expect "opensusetw is zypper" 0 $?
 run get nosuchslug; expect "unknown slug cannot be judged" 2 $?
-run tool appimagetool; rc=$?
-grep -q '/1\.9\.1/' "$work/out"; expect "tool appimagetool names its version" "0 0" "$rc $?"
 PKG_IMAGES_LOCK="$work/absent" "$tool" check >/dev/null 2>&1; expect "missing lock cannot be judged" 2 $?
 
 # Perturbations of a copy of the shipped lock.
@@ -46,14 +44,14 @@ mut() {  # mut <name> <sed-expression> -> check over the mutated copy must be re
 }
 mut "short digest is red"            's/^(image debian13 .*@sha256:[0-9a-f]{63})[0-9a-f]/\1/'
 mut "tag without digest is red"      's/^(image fedora43 +dnf +[^@]+)@sha256:[0-9a-f]+/\1/'
-mut "continuous tool url is red"     's#(tool appimagetool .*/download/)1\.9\.1/#\1continuous/#'
 mut "unknown manager is red"         's/^(image fedora44 +)dnf/\1yum/'
 mut "duplicate slug is red"          's/^image ubuntu2604 /image debian13 /'
-mut "tool sum not 64 hex is red"     's/^(tool linuxdeploy .* )[0-9a-f]{64}$/\1abc/'
 mut "unknown row kind is red"        's/^image leap160 /img leap160 /'
+# The AppImage tool rows went with the AppImage; one left behind is not a pass.
+zeros="$(printf '0%.0s' $(seq 64))"
+mut "a tool row is red"              "\$a tool appimagetool 1.9.1 https://example.invalid/1.9.1/a $zeros"
 
-# refresh: a moved digest is rewritten, an unchanged one is not, and a tool
-# whose bytes differ from the sum is red.
+# refresh: a moved digest is rewritten, an unchanged one is not.
 cp "$lock" "$work/lock"
 cat >"$work/resolver" <<'EOF'
 #!/usr/bin/env bash
@@ -62,66 +60,26 @@ case "$1:$2" in
   *) grep -F " $1:$2@" "$PKG_IMAGES_LOCK" | sed -E 's/.*@//' ;;
 esac
 EOF
-cat >"$work/fetch-good" <<'EOF'
-#!/usr/bin/env bash
-# The bytes whose sha256 the lock records are not available offline, so the
-# good fetcher writes a file and the lock copy is rewritten to its sum below.
-printf 'tool bytes for %s\n' "$1" >"$2"
-EOF
-cat >"$work/fetch-bad" <<'EOF'
-#!/usr/bin/env bash
-printf 'tampered bytes for %s\n' "$1" >"$2"
-EOF
-chmod +x "$work/resolver" "$work/fetch-good" "$work/fetch-bad"
-# Rewrite the copy's tool sums to what fetch-good produces.
-while read -r _ _ _ url sum; do
-    s="$(printf 'tool bytes for %s\n' "$url" | sha256sum | cut -d' ' -f1)"
-    sed -i "s|$sum\$|$s|" "$work/lock"
-done < <(grep '^tool ' "$lock")
+chmod +x "$work/resolver"
 cp "$work/lock" "$work/lock.before"
-PKG_IMAGES_LOCK="$work/lock" PKG_IMAGES_RESOLVER="$work/resolver" PKG_IMAGES_FETCH="$work/fetch-good" \
+PKG_IMAGES_LOCK="$work/lock" PKG_IMAGES_RESOLVER="$work/resolver" \
     "$tool" refresh --dry-run >"$work/out" 2>&1
 rc=$?; cmp -s "$work/lock" "$work/lock.before"; expect "refresh --dry-run reports and writes nothing" "0 0" "$rc $?"
-PKG_IMAGES_LOCK="$work/lock" PKG_IMAGES_RESOLVER="$work/resolver" PKG_IMAGES_FETCH="$work/fetch-good" \
+PKG_IMAGES_LOCK="$work/lock" PKG_IMAGES_RESOLVER="$work/resolver" \
     "$tool" refresh >"$work/out" 2>&1
 rc=$?
 grep -qE '^image fedora44 +dnf +docker\.io/library/fedora:44@sha256:f{64}$' "$work/lock"; moved=$?
 grep -qF "$(grep '^image debian13 ' "$lock")" "$work/lock"; kept=$?
 expect "refresh moves the moved digest and keeps the rest" "0 0 0" "$rc $moved $kept"
 PKG_IMAGES_LOCK="$work/lock" "$tool" check >/dev/null 2>&1; expect "refreshed lock is still well-formed" 0 $?
-PKG_IMAGES_LOCK="$work/lock" PKG_IMAGES_RESOLVER="$work/resolver" PKG_IMAGES_FETCH="$work/fetch-bad" \
-    "$tool" refresh --dry-run >"$work/out" 2>&1
-expect "refresh over tampered tool bytes is red" 1 $?
 cat >"$work/resolver-down" <<'EOF'
 #!/usr/bin/env bash
 exit 2
 EOF
 chmod +x "$work/resolver-down"
-PKG_IMAGES_LOCK="$work/lock" PKG_IMAGES_RESOLVER="$work/resolver-down" PKG_IMAGES_FETCH="$work/fetch-good" \
+PKG_IMAGES_LOCK="$work/lock" PKG_IMAGES_RESOLVER="$work/resolver-down" \
     "$tool" refresh >"$work/out" 2>&1
 expect "unreachable registry cannot be judged" 2 $?
-
-# install-tools: every tool lands executable with its sum, a present good file
-# is kept, a tampered download is deleted and refused.
-PKG_IMAGES_LOCK="$work/lock.before" PKG_IMAGES_FETCH="$work/fetch-good" \
-    "$tool" install-tools "$work/tools" >"$work/out" 2>"$work/err"; rc=$?
-n="$(wc -l <"$work/out")"
-x=0; while read -r _ f; do [ -x "$f" ] || x=1; done <"$work/out"
-grep -q '^appimage-runtime .*/runtime-x86_64$' "$work/out"; rt=$?
-expect "install-tools puts every tool in place, executable, and names the runtime file" "0 4 0 0" "$rc $n $x $rt"
-touch -d '2000-01-01' "$work/tools/appimagetool-x86_64.AppImage"
-PKG_IMAGES_LOCK="$work/lock.before" PKG_IMAGES_FETCH="$work/fetch-bad" \
-    "$tool" install-tools "$work/tools" >"$work/out" 2>"$work/err"; rc=$?
-test "$(stat -c %Y "$work/tools/appimagetool-x86_64.AppImage")" = "$(date -d '2000-01-01' +%s)"
-expect "install-tools keeps a file whose sum is already right (no download)" "0 0" "$rc $?"
-rm -rf "$work/tools"
-PKG_IMAGES_LOCK="$work/lock.before" PKG_IMAGES_FETCH="$work/fetch-bad" \
-    "$tool" install-tools "$work/tools" >"$work/out" 2>"$work/err"; rc=$?
-left="$(find "$work/tools" -type f | wc -l)"
-expect "install-tools over tampered bytes is red and leaves nothing behind" "1 0" "$rc $left"
-PKG_IMAGES_LOCK="$work/lock.before" PKG_IMAGES_FETCH="$work/resolver-down" \
-    "$tool" install-tools "$work/tools2" >"$work/out" 2>"$work/err"
-expect "install-tools with no network cannot be judged" 2 $?
 
 [ "$fail" -eq 0 ] || { echo "pkg-images.selftest: FAILED"; exit 1; }
 echo "selftest: $cases cases, $red red-proved"

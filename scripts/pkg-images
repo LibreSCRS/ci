@@ -1,35 +1,24 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # pkg-images -- read, check and refresh images.lock (the container image per
-# distribution slug, by digest, and the AppImage tools, by version + sha256).
+# distribution slug, by digest).
 #
 # Usage:
 #   pkg-images get <slug>        print <repository>:<tag>@sha256:<digest>
 #   pkg-images manager <slug>    print apt | dnf | zypper
 #   pkg-images family <slug>     print deb | rpm
 #   pkg-images slugs             print every slug, one per line
-#   pkg-images tool <name>       print "<version> <url> <sha256>"
 #   pkg-images check             the form of the lock (offline)
-#   pkg-images install-tools <dir>
-#                                every `tool` row into DIR (file name = the
-#                                URL's last segment, executable), each held to
-#                                its sha256; a file already there with the right
-#                                sum is kept, a wrong one is deleted and refused.
-#                                Prints "<name> <path>" per tool.
 #   pkg-images refresh [--dry-run]
 #                                re-resolve every image digest from its
-#                                registry and rewrite the lock; download every
-#                                tool and hold it to its sha256 (a tool's
-#                                VERSION is never moved here -- that is a
-#                                decision, not a refresh)
+#                                registry and rewrite the lock
 #
 # The lock is this repository's own file (it is not a consumer's), so it is
 # found next to this script unless PKG_IMAGES_LOCK names another one.
-# PKG_IMAGES_RESOLVER / PKG_IMAGES_FETCH replace the network for the self-test.
+# PKG_IMAGES_RESOLVER replaces the network for the self-test.
 #
-# Exit codes: 0 answered / green, 1 a finding (malformed lock, a tool whose
-# bytes do not match), 2 cannot judge (no lock, unknown slug or tool, registry
-# unreachable).
+# Exit codes: 0 answered / green, 1 a finding (a malformed lock), 2 cannot
+# judge (no lock, unknown slug, registry unreachable).
 set -uo pipefail
 
 here="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)" || exit 2
@@ -50,7 +39,7 @@ image_row() {  # image_row SLUG -> "slug manager ref", or exit 2
 }
 
 cmd_check() {
-    local fail=0 n=0 line kind slug mgr ref name ver url sum
+    local fail=0 n=0 line kind slug mgr ref
     local -A seen=()
     while IFS= read -r line; do
         n=$((n + 1))
@@ -69,31 +58,11 @@ cmd_check() {
             [ -z "${seen[img:$slug]+x}" ] || { echo "FAIL line $n: slug '$slug' twice"; fail=1; }
             seen[img:$slug]=1
             ;;
-        tool)
-            read -r kind name ver url sum extra <<<"$line"
-            if [ -z "${sum:-}" ] || [ -n "${extra:-}" ]; then
-                echo "FAIL line $n: want 'tool <name> <version> <url> <sha256>': $line"; fail=1; continue
-            fi
-            [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || { echo "FAIL line $n: sha256 of $name is not 64 hex"; fail=1; }
-            case "$url" in
-                https://*) ;;
-                *) echo "FAIL line $n: $name url is not https"; fail=1 ;;
-            esac
-            case "$url" in
-                */continuous/*|*/latest/*) echo "FAIL line $n: $name url names a moving release ($url)"; fail=1 ;;
-            esac
-            case "$url" in
-                *"/$ver/"*) ;;
-                *) echo "FAIL line $n: $name url does not carry its version '$ver' as a path segment"; fail=1 ;;
-            esac
-            [ -z "${seen[tool:$name]+x}" ] || { echo "FAIL line $n: tool '$name' twice"; fail=1; }
-            seen[tool:$name]=1
-            ;;
         *) echo "FAIL line $n: unknown row kind '$kind'"; fail=1 ;;
         esac
     done <"$LOCK"
     [ -n "$(rows image)" ] || { echo "FAIL the lock names no image"; fail=1; }
-    [ "$fail" -eq 0 ] && echo "pkg-images check: $(rows image | wc -l) image(s), $(rows tool | wc -l) tool(s), well-formed"
+    [ "$fail" -eq 0 ] && echo "pkg-images check: $(rows image | wc -l) image(s), well-formed"
     return "$fail"
 }
 
@@ -115,16 +84,11 @@ resolve() {
         || return 2
 }
 
-fetch() {  # fetch URL DEST
-    if [ -n "${PKG_IMAGES_FETCH:-}" ]; then "$PKG_IMAGES_FETCH" "$1" "$2"; return; fi
-    curl -fsSL --retry 3 -o "$2" "$1"
-}
-
 cmd_refresh() {
     local dry=0
     [ "${1:-}" = --dry-run ] && dry=1
     cmd_check >/dev/null || { cmd_check; die2 "the lock is malformed -- refusing to rewrite it"; }
-    local tmp work line kind slug mgr ref repo tag old new changed=0 bad=0
+    local tmp work line kind slug mgr ref repo tag old new changed=0
     work="$(mktemp -d "${TMPDIR:-/var/tmp}/pkg-images.XXXXXX")" || die2 "no temporary directory"
     trap 'rm -rf "$work"' RETURN
     tmp="$work/lock"
@@ -143,44 +107,11 @@ cmd_refresh() {
         fi
         printf '%s\n' "$line" >>"$tmp"
     done <"$LOCK"
-    local name ver url sum got
-    while read -r kind name ver url sum; do
-        fetch "$url" "$work/tool" || { echo "pkg-images: cannot download $name from $url" >&2; return 2; }
-        got="$(sha256sum "$work/tool" | cut -d' ' -f1)"
-        if [ "$got" = "$sum" ]; then echo "ok     tool $name $ver"
-        else echo "FAIL   tool $name $ver: sha256 $got, lock says $sum"; bad=1; fi
-    done < <(rows tool)
     if [ "$dry" -eq 0 ] && [ "$changed" -gt 0 ]; then
         sed -i -E 's/^(# Measured )[0-9]{4}-[0-9]{2}-[0-9]{2}/\1'"$(date -u +%F)"'/' "$tmp"
         cat "$tmp" >"$LOCK"
         echo "pkg-images: $changed image digest(s) moved; review and commit $LOCK"
     fi
-    return "$bad"
-}
-
-cmd_install_tools() {
-    local dir="$1" kind name ver url sum f got bad=0 n=0
-    mkdir -p "$dir" || die2 "cannot create $dir"
-    dir="$(cd "$dir" && pwd)" || die2 "cannot enter $dir"
-    while read -r kind name ver url sum; do
-        n=$((n + 1))
-        f="$dir/${url##*/}"
-        if [ -f "$f" ] && [ "$(sha256sum "$f" | cut -d' ' -f1)" = "$sum" ]; then
-            :
-        else
-            rm -f "$f"
-            fetch "$url" "$f" || { echo "pkg-images: cannot download $name from $url" >&2; rm -f "$f"; return 2; }
-            got="$(sha256sum "$f" | cut -d' ' -f1)"
-            if [ "$got" != "$sum" ]; then
-                echo "pkg-images: $name $ver: sha256 $got, the lock says $sum -- deleted" >&2
-                rm -f "$f"; bad=1; continue
-            fi
-        fi
-        chmod +x "$f"
-        printf '%s %s\n' "$name" "$f"
-    done < <(rows tool)
-    [ "$n" -gt 0 ] || die2 "the lock names no tool"
-    return "$bad"
 }
 
 cmd="${1:-}"; shift || true
@@ -191,11 +122,7 @@ case "$cmd" in
              m="$(image_row "$1" | awk '{ print $2 }')" || exit 2
              case "$m" in apt) echo deb ;; dnf|zypper) echo rpm ;; *) die2 "manager '$m'" ;; esac ;;
     slugs)   rows image | awk '{ print $2 }' ;;
-    tool)    [ $# -eq 1 ] || die2 "usage: tool <name>"
-             r="$(rows tool | awk -v n="$1" '$2 == n { print $3, $4, $5 }')"
-             [ -n "$r" ] || die2 "unknown tool '$1'"; printf '%s\n' "$r" ;;
     check)   cmd_check ;;
     refresh) cmd_refresh "$@" ;;
-    install-tools) [ $# -eq 1 ] || die2 "usage: install-tools <dir>"; cmd_install_tools "$1" ;;
-    *) die2 "usage: pkg-images get|manager|family|slugs|tool|check|refresh|install-tools" ;;
+    *) die2 "usage: pkg-images get|manager|family|slugs|check|refresh" ;;
 esac
