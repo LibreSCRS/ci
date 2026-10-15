@@ -13,8 +13,10 @@ description: >-
 # vendored agent contract to the LibreAgent checked out here.
 #
 # Paths: <path>/<Name> relative to the workspace (default .deps/LibreAgent,
-# .deps/LibreMiddleware, .deps/LibreDarwin -- the last only LibreMac locks,
-# for the agent and prompter its DMG bundles). Outputs give the absolute paths.
+# .deps/LibreMiddleware, .deps/LibreDarwin, .deps/LibreCelik -- the last two
+# only LibreMac locks: LibreDarwin for the agent and prompter its DMG bundles,
+# LibreCelik for the application the same DMG carries). Outputs give the
+# absolute paths.
 #
 # Needs bash 4 or later (on macOS: brew install bash); bash 3 is exit 2.
 
@@ -29,7 +31,7 @@ inputs:
   names:
     description: >-
       Which rows of deps.lock to check out, space or comma separated
-      (LibreMiddleware, LibreAgent, LibreDarwin). Empty (the default) means every row. A
+      (LibreMiddleware, LibreAgent, LibreDarwin, LibreCelik). Empty (the default) means every row. A
       name the lock does not carry is exit 1, not a skip.
     required: false
     default: ''
@@ -69,6 +71,12 @@ outputs:
   libredarwin-sha:
     description: The LibreDarwin commit from deps.lock.
     value: ${{ steps.resolve.outputs.libredarwin-sha }}
+  librecelik-path:
+    description: Absolute path of the LibreCelik checkout (empty when not asked for).
+    value: ${{ steps.paths.outputs.librecelik-path }}
+  librecelik-sha:
+    description: The LibreCelik commit from deps.lock.
+    value: ${{ steps.resolve.outputs.librecelik-sha }}
 
 runs:
   using: composite
@@ -123,6 +131,17 @@ runs:
         submodules: ${{ inputs.submodules }}
         persist-credentials: false
 
+    - name: Checkout LibreCelik at the lock
+      if: steps.resolve.outputs.librecelik-wanted == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        repository: ${{ steps.resolve.outputs.librecelik-repository }}
+        ref: ${{ steps.resolve.outputs.librecelik-sha }}
+        path: ${{ inputs.path }}/LibreCelik
+        fetch-depth: ${{ inputs.fetch-depth }}
+        submodules: ${{ inputs.submodules }}
+        persist-credentials: false
+
     - name: Prove each checkout is the locked commit
       id: paths
       shell: bash
@@ -133,16 +152,18 @@ runs:
         WANT_LM: ${{ steps.resolve.outputs.libremiddleware-wanted }}
         WANT_LA: ${{ steps.resolve.outputs.libreagent-wanted }}
         WANT_LD: ${{ steps.resolve.outputs.libredarwin-wanted }}
+        WANT_LC: ${{ steps.resolve.outputs.librecelik-wanted }}
       run: |
         set -uo pipefail
         base="$GITHUB_WORKSPACE/$DEPS_PATH"
         args=(check --root "$GITHUB_WORKSPACE/$ROOT" --no-remote)
         [ -z "$CONSUMER" ] || args+=(--consumer "$CONSUMER")
-        lm="" la="" ld=""
+        lm="" la="" ld="" lc=""
         [ "$WANT_LM" != true ] || { lm="$base/LibreMiddleware"; args+=(--checkout "LibreMiddleware=$lm"); }
         [ "$WANT_LA" != true ] || { la="$base/LibreAgent"; args+=(--checkout "LibreAgent=$la"); }
         [ "$WANT_LD" != true ] || { ld="$base/LibreDarwin"; args+=(--checkout "LibreDarwin=$ld"); }
+        [ "$WANT_LC" != true ] || { lc="$base/LibreCelik"; args+=(--checkout "LibreCelik=$lc"); }
         rc=0
         "$GITHUB_ACTION_PATH/../../scripts/bump-deps" "${args[@]}" || rc=$?
         [ "$rc" = 0 ] || exit "$rc"
-        { echo "libremiddleware-path=$lm"; echo "libreagent-path=$la"; echo "libredarwin-path=$ld"; } >>"$GITHUB_OUTPUT"
+        { echo "libremiddleware-path=$lm"; echo "libreagent-path=$la"; echo "libredarwin-path=$ld"; echo "librecelik-path=$lc"; } >>"$GITHUB_OUTPUT"

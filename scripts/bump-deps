@@ -5,7 +5,8 @@
 #
 # Every consumer carries a `deps.lock` in its root, one row per upstream it
 # builds from source (LibreMac: the agent + prompter it bundles, built from
-# LibreDarwin, and the LibreAgent contract it vendors):
+# LibreDarwin, the LibreCelik application its disk image carries, and the
+# LibreAgent contract it vendors):
 #
 #   # <name>         <url>                                        <commit40>
 #   LibreMiddleware  https://github.com/LibreSCRS/LibreMiddleware  3307307...
@@ -51,7 +52,7 @@ declare -A EXPECT=(
     [LibreDarwin]="LibreMiddleware LibreAgent"
     [LibreCelik]="LibreAgent"
     [LibreKDE]="LibreAgent"
-    [LibreMac]="LibreAgent LibreDarwin"
+    [LibreMac]="LibreAgent LibreDarwin LibreCelik"
 )
 declare -A KNOWN=()
 for r in "${REPOS[@]}"; do KNOWN[$r]=1; done
