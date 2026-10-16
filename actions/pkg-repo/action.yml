@@ -1,0 +1,247 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: Package repository publisher step
+description: >
+  One step of the packages repository's publisher, through the scripts of this
+  checkout: fetch-releases, fetch-prev, assemble, sign-index and verify-tree
+  (scripts/pkg-repo.py), probe (scripts/pkg-repo-probe.sh), aur
+  (scripts/aur-publish.sh in the archlinux tool image) and keepalive (enables
+  publish.yml again, so the schedule GitHub disables after 60 days without
+  activity keeps running). Exit codes are the script's: 1 a finding, 2 cannot
+  judge -- both fail the step.
+  Two values come from the env of the calling `uses:` step, never from
+  inputs, so a token the caller chose is the one used: GH_TOKEN for
+  fetch-releases (read access to the six repositories' releases and
+  attestations on a publish, `actions: read` on their runs' artifacts on a
+  rehearsal) and for keepalive (`actions: write` on LibreSCRS/packages); RUNS,
+  "<Repo>=<run id>" for every repository, for a rehearsal's fetch-releases.
+  fetch-prev reads the public site and needs no token. It runs on a publish
+  only: the published generation is under package-signing, and a rehearsal
+  carries nothing over (its caller writes <tree>/EMPTY instead); mode=rehearse
+  is refused. An explicit `keyset` judges a fake site in the selftests.
+  On a publish, fetch-releases writes <tree>/NONE instead of failing when no
+  repository has released yet. step=assemble sets the output `published`: false
+  only when `releases` holds NONE and `prev` holds EMPTY (nothing released and
+  nothing published: it prints "not yet published", assembles nothing and
+  exits 0); true otherwise, the first publish included. NONE beside a
+  published generation is a finding -- a release vanished. The calling
+  workflow uploads the fetch-prev directory as the artifact `tree-prev`, for
+  the probe's upgrade and key steps, and skips the upload when that directory
+  holds EMPTY.
+inputs:
+  step:
+    description: 'fetch-releases | fetch-prev | assemble | sign-index | verify-tree | probe | aur | keepalive'
+    required: true
+  mode:
+    description: >
+      publish | rehearse. fetch-releases and sign-index need it, and fetch-prev
+      refuses rehearse; for the other pkg-repo.py steps it chooses the key set
+      when `keyset` is empty (publish: package-signing, rehearse: rehearsal).
+    required: false
+    default: ''
+  keyset:
+    description: >
+      rehearsal | package-signing. Required for probe, which may judge a
+      rehearsal-keyed copy of a publish tree; elsewhere empty means by `mode`.
+    required: false
+    default: ''
+  tree:
+    description: >
+      The directory the step works on: the output of fetch-releases, fetch-prev
+      and assemble; the tree sign-index, verify-tree and probe judge.
+    required: false
+    default: ''
+  releases:
+    description: 'assemble: the fetch-releases directory'
+    required: false
+    default: ''
+  prev:
+    description: >
+      assemble and probe: the fetch-prev mirror of the previous generation
+      (holding EMPTY: there is none). assemble needs it when `releases` holds
+      NONE.
+    required: false
+    default: ''
+  key:
+    description: 'sign-index on a publish: the armored index-signing subkey (empty on a rehearsal)'
+    required: false
+    default: ''
+  install-dir:
+    description: "probe: the packages repository's install/ directory"
+    required: false
+    default: ''
+  slugs:
+    description: 'probe: the slugs to probe (empty: all of them)'
+    required: false
+    default: ''
+  steps:
+    description: 'probe: the probe steps, e.g. "p1p2 forge" or "upgrade key" (empty: p1p2)'
+    required: false
+    default: ''
+  live-url:
+    description: 'fetch-prev: the published site'
+    required: false
+    default: 'https://librescrs.github.io/packages'
+  sources:
+    description: 'aur: one checkout per repository at its release tag'
+    required: false
+    default: ''
+  remote-base:
+    description: 'aur: <remote-base>/<pkgbase>.git is the AUR repository'
+    required: false
+    default: 'ssh://aur@aur.archlinux.org'
+  ssh-key:
+    description: 'aur: the AUR SSH key (private)'
+    required: false
+    default: ''
+  known-hosts:
+    description: "aur: the AUR host keys (empty: keys/aur-known-hosts of this action's checkout)"
+    required: false
+    default: ''
+outputs:
+  published:
+    description: >
+      step=assemble: false only when nothing is released and nothing is
+      published yet (releases/NONE and prev/EMPTY); true otherwise
+    value: ${{ steps.run.outputs.published }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        CI_ROOT: ${{ github.action_path }}/../..
+        STEP: ${{ inputs.step }}
+        MODE: ${{ inputs.mode }}
+        KEYSET: ${{ inputs.keyset }}
+        TREE: ${{ inputs.tree }}
+        RELEASES: ${{ inputs.releases }}
+        PREV: ${{ inputs.prev }}
+        KEY: ${{ inputs.key }}
+        INSTALL_DIR: ${{ inputs.install-dir }}
+        PROBE_SLUGS: ${{ inputs.slugs }}
+        PROBE_STEPS: ${{ inputs.steps }}
+        LIVE_URL: ${{ inputs.live-url }}
+        SOURCES: ${{ inputs.sources }}
+        REMOTE_BASE: ${{ inputs.remote-base }}
+        SSH_KEY: ${{ inputs.ssh-key }}
+        KNOWN_HOSTS: ${{ inputs.known-hosts }}
+      run: |
+        set -uo pipefail
+        s="$CI_ROOT/scripts"
+        # Values echoed into a workflow command are escaped as GitHub decodes
+        # them, so an input holding a newline cannot start a command of its own.
+        err() {
+          local m="$*"
+          m="${m//%/%25}"; m="${m//$'\r'/%0D}"; m="${m//$'\n'/%0A}"
+          printf '::error::%s\n' "$m"
+        }
+        # Secrets stay out of every child's environment: the keys reach the
+        # scripts as files, the token only the two commands that call gh.
+        key="$KEY" ssh_key="$SSH_KEY" token="${GH_TOKEN:-}" runs="${RUNS:-}"
+        unset KEY SSH_KEY GH_TOKEN
+        sec="$RUNNER_TEMP/pkg-repo-secrets"
+        rm -rf "$sec"; mkdir -m 700 "$sec" || exit 2
+        trap 'rm -rf "$sec"' EXIT
+        need() { [ -n "$2" ] || { err "step=$STEP needs the input $1"; exit 2; }; }
+        need_token() { [ -n "$token" ] || { err "step=$STEP needs GH_TOKEN in the env of the calling step"; exit 2; }; }
+        by_mode() {
+          [ -z "$KEYSET" ] || return 0
+          case "$MODE" in
+            publish) KEYSET=package-signing ;;
+            rehearse) KEYSET=rehearsal ;;
+            *) err "step=$STEP needs keyset, or mode publish|rehearse (mode '$MODE')"; exit 2 ;;
+          esac
+        }
+        case "$STEP" in
+          fetch-releases)
+            need tree "$TREE"; need_token
+            case "$MODE" in
+              publish)
+                [ -z "$runs" ] || { err "a publish fetches releases, not rehearsal runs"; exit 2; }
+                GH_TOKEN="$token" python3 "$s/pkg-repo.py" fetch-releases --out "$TREE" --mode publish --allow-none ;;
+              rehearse)
+                [ -n "$runs" ] || { err "a rehearsal's fetch-releases needs RUNS in the env of the calling step"; exit 2; }
+                GH_TOKEN="$token" RUNS="$runs" python3 "$s/pkg-repo.py" fetch-releases --out "$TREE" --mode rehearse ;;
+              *) err "mode '$MODE' is neither publish nor rehearse"; exit 2 ;;
+            esac ;;
+          fetch-prev)
+            need tree "$TREE"
+            # The live site is never rehearsal-keyed: a rehearsal judging it
+            # with the rehearsal key would be red from the first publish on.
+            [ "$MODE" != rehearse ] || {
+              err "fetch-prev mirrors the published generation, which is under package-signing; a rehearsal carries nothing over (write <tree>/EMPTY instead)"
+              exit 2
+            }
+            by_mode
+            python3 "$s/pkg-repo.py" fetch-prev --url "$LIVE_URL" --keyset "$KEYSET" --out "$TREE" ;;
+          assemble)
+            need tree "$TREE"; need releases "$RELEASES"; by_mode
+            if [ -e "$RELEASES/NONE" ]; then
+              # Nothing released: green only while nothing is published either.
+              need prev "$PREV"
+              if [ -e "$PREV/EMPTY" ]; then
+                echo "not yet published: $(cat -- "$RELEASES/NONE")"
+                echo "published=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              if [ -d "$PREV" ] && [ -n "$(find "$PREV" -mindepth 1 -print -quit)" ]; then
+                err "no release is left, but $LIVE_URL publishes a generation -- a published release vanished"
+                exit 1
+              fi
+              err "prev '$PREV' is neither a fetch-prev mirror nor EMPTY -- cannot judge"
+              exit 2
+            fi
+            python3 "$s/pkg-repo.py" assemble --in "$RELEASES" --prev "$PREV" --out "$TREE" \
+              --now "$(date +%s)" --keyset "$KEYSET" || exit $?
+            echo "published=true" >> "$GITHUB_OUTPUT" ;;
+          sign-index)
+            need tree "$TREE"
+            # The index key signs only a publish; a rehearsal signs with the
+            # public rehearsal key and must never be handed the real one.
+            case "$MODE" in
+              publish)
+                need key "$key"
+                [ -z "$KEYSET" ] || [ "$KEYSET" = package-signing ] \
+                  || { err "a publish signs with package-signing, not '$KEYSET'"; exit 2; }
+                ( umask 077; printf '%s\n' "$key" > "$sec/index.asc" ) || exit 2
+                python3 "$s/pkg-repo.py" sign-index --tree "$TREE" --keyset package-signing --key "$sec/index.asc" ;;
+              rehearse)
+                [ -z "$key" ] || { err "a rehearsal received the real index key -- refusing"; exit 1; }
+                [ -z "$KEYSET" ] || [ "$KEYSET" = rehearsal ] \
+                  || { err "a rehearsal signs with rehearsal, not '$KEYSET'"; exit 2; }
+                python3 "$s/pkg-repo.py" sign-index --tree "$TREE" --keyset rehearsal ;;
+              *) err "mode '$MODE' is neither publish nor rehearse"; exit 2 ;;
+            esac ;;
+          verify-tree)
+            need tree "$TREE"; by_mode
+            python3 "$s/pkg-repo.py" verify-tree --tree "$TREE" --keyset "$KEYSET" ;;
+          probe)
+            need tree "$TREE"; need install-dir "$INSTALL_DIR"; need keyset "$KEYSET"
+            args=(--tree "$TREE" --install-dir "$INSTALL_DIR" --keyset "$KEYSET")
+            [ -z "$PREV" ] || args+=(--prev "$PREV")
+            [ -z "$PROBE_SLUGS" ] || args+=(--slugs "$PROBE_SLUGS")
+            [ -z "$PROBE_STEPS" ] || args+=(--steps "$PROBE_STEPS")
+            bash "$s/pkg-repo-probe.sh" "${args[@]}" ;;
+          aur)
+            need sources "$SOURCES"
+            [ -d "$SOURCES" ] || { err "sources '$SOURCES' is not a directory"; exit 2; }
+            img="$(bash "$s/pkg-images" tool-image archlinux)" || exit 2
+            args=(--sources /src --remote-base "$REMOTE_BASE")
+            if [ -n "$ssh_key" ]; then
+              ( umask 077; printf '%s\n' "$ssh_key" > "$sec/ssh-key" ) || exit 2
+              command cp -f "${KNOWN_HOSTS:-$CI_ROOT/keys/aur-known-hosts}" "$sec/known_hosts" || exit 2
+              args+=(--ssh-key /k/ssh-key --known-hosts /k/known_hosts)
+            fi
+            # aur-publish.sh runs as root in the image and hands the work to
+            # an unprivileged user; the checkouts and the key are read-only.
+            docker run --rm -v "$(cd -- "$SOURCES" && pwd):/src:ro" -v "$(cd -- "$CI_ROOT" && pwd):/ci:ro" \
+              -v "$sec:/k:ro" "$img" bash /ci/scripts/aur-publish.sh "${args[@]}" ;;
+          keepalive)
+            need_token
+            GH_TOKEN="$token" gh api -X PUT repos/LibreSCRS/packages/actions/workflows/publish.yml/enable \
+              && echo "publish.yml enabled" ;;
+          *) err "unknown step '$STEP'"; exit 2 ;;
+        esac
+    - if: always()
+      shell: bash
+      run: rm -rf "$RUNNER_TEMP/pkg-repo-secrets"
