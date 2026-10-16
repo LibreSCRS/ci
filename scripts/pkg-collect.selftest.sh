@@ -35,6 +35,11 @@ touchall in/librescrs-middleware-5.0.0-1.opensusetw.x86_64.rpm in2/librescrs-age
 "$tool" opensusetw "$work/out" "$work/in" "$work/in2" >"$work/log" 2>&1; rc=$?
 test -f "$work/out/librescrs-agent-5.0.0-1.opensusetw.x86_64.opensusetw.rpm"; expect "rpm from two directories" "0 0" "$rc $?"
 
+# green: '~' of a distribution revision never reaches the asset name
+fresh; touchall in/x_1-1~deb13_all.deb
+"$tool" debian13 "$work/out" "$work/in" >"$work/log" 2>&1; rc=$?
+test -f "$work/out/x_1-1.deb13_all.debian13.deb" -a "$(find "$work/out" -type f -name '*~*' | wc -l)" -eq 0; expect "'~' becomes '.' in the asset name" "0 0" "$rc $?"
+
 red_case() {  # red_case <name> <slug> <files...>
     local name="$1" slug="$2"; shift 2
     fresh; touchall "$@"
@@ -50,6 +55,8 @@ red_case "an rpm on a deb slug is refused" debian13 in/liblibrescrs5_5.0.0-1_amd
 red_case "two inputs wanting one asset name are refused" debian13 in/a_1_all.deb in2/a_1_all.deb
 red_case "an already-slugged file is refused" debian13 in/a_1_all.debian13.deb
 red_case "an empty set is refused" fedora43
+
+red_case "'~' and '.' spellings of one revision collide" debian13 in/x_1-1~a_all.deb in2/x_1-1.a_all.deb
 
 fresh; touchall in/a_1_all.deb
 "$tool" nosuchslug "$work/out" "$work/in" >/dev/null 2>&1; expect "unknown slug cannot be judged" 2 $?

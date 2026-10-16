@@ -41,6 +41,8 @@ version="$(tr -d '[:space:]' <"$root/VERSION")"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([~+.-][0-9A-Za-z.~+-]+)?$ ]] \
     || { echo "pkg-changelog-debian: VERSION '$version' is not a version" >&2; exit 1; }
 revision="${DEB_REVISION:-1}"
+[[ "$revision" =~ ^[0-9]+(~[a-z]+[0-9.]+)?$ ]] \
+    || { echo "pkg-changelog-debian: revision '$revision' is not a revision" >&2; exit 1; }
 
 if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
     stamp="$(LC_ALL=C date -R -u -d "@$SOURCE_DATE_EPOCH")"

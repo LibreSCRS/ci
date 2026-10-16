@@ -18,6 +18,7 @@ expect() {
     else echo "FAIL $1: want rc=$2, got rc=$3"; tail -n 15 "$work/log" | sed 's/^/  | /'; fail=1; fi
 }
 
+printf 'ID=debian\nVERSION_ID="13"\n' >"$work/os-release"
 mkdir -p "$work/bin"
 for t in apt-get mk-build-deps; do printf '#!/bin/sh\nexit 0\n' >"$work/bin/$t"; done
 cat >"$work/bin/dpkg-buildpackage" <<'EOF'
@@ -42,7 +43,7 @@ tree() {  # tree [headline]
 }
 build() {
     ( cd "$work/t/src" && env PATH="$work/bin:$PATH" STUB_REC="$work/rec" PKG_OUT="$work/out" \
-        PKG_UPSTREAM="$work/up" PKG_JOBS=4 SOURCE_DATE_EPOCH=0 "$@" bash "$tool" ) >"$work/log" 2>&1
+        PKG_UPSTREAM="$work/up" PKG_OS_RELEASE="$work/os-release" PKG_JOBS=4 SOURCE_DATE_EPOCH=0 "$@" bash "$tool" ) >"$work/log" 2>&1
 }
 
 tree; build; rc=$?
@@ -51,6 +52,7 @@ grep -qw 'parallel=4' "$work/rec/options"; par=$?
 test -f "$work/out/librescrs-x_5.0.0-1_amd64.deb" -a ! -e "$work/out/librescrs-x_5.0.0-1_amd64.changes"; only=$?
 expect "green build: noautodbgsym, parallel, only the .deb collected" "0 0 0 0" "$rc $nd $par $only"
 grep -q '^ -- LibreSCRS <librescrs@proton.me>  ' "$work/rec/changelog"; expect "changelog generated with the project maintainer" 0 $?
+head -n 1 "$work/rec/changelog" | grep -qx 'librescrs-x (5.0.0-1~deb13) unstable; urgency=medium'; expect "the changelog revision names the distribution of the image" 0 $?
 tree; build DEB_BUILD_OPTIONS=nocheck; rc=$?
 grep -qw noautodbgsym "$work/rec/options" && grep -qw nocheck "$work/rec/options"; expect "caller options kept, noautodbgsym still added" "0 0" "$rc $?"
 
@@ -65,6 +67,8 @@ tree; red_case "a .ddeb produced anyway fails the build" STUB_DDEB=1
 tree; printf 'x\n' >"$work/up/liblibrescrs5-dbgsym_5.0.0-1_amd64.deb"
 red_case "a debug package offered as upstream input fails the build"
 tree; red_case "no package produced fails the build" STUB_NONE=1
+tree; printf 'ID=arch\n' >"$work/os-release"; red_case "an image whose distribution is not named fails the build"
+printf 'ID=debian\nVERSION_ID="13"\n' >"$work/os-release"
 tree 'Removed src/utils/utils.h.'; red_case "an internal path in the release headline stops the build"
 
 [ "$fail" -eq 0 ] || { echo "pkg-build-deb.selftest: FAILED"; exit 1; }

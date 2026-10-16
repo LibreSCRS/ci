@@ -53,6 +53,11 @@ cp -a packaging/debian debian
 chmod +x debian/rules
 src="$(awk '/^Source:/{print $2; exit}' debian/control)"
 [ -n "$src" ] || { echo "pkg-build-deb: debian/control names no Source" >&2; exit 1; }
+# The revision names the distribution of this image (1~deb13): two builds of
+# one version must not share a Version. PKG_OS_RELEASE exists for the self-test.
+DEB_REVISION="$(bash "$here/pkg-deb-revision.sh" "${PKG_OS_RELEASE:-/etc/os-release}")" \
+    || { echo "pkg-build-deb: no Debian revision for this image" >&2; exit 1; }
+export DEB_REVISION
 REPO_ROOT="$PWD" bash "$here/pkg-changelog-debian.sh" "$src" debian/changelog
 head -n 3 debian/changelog
 

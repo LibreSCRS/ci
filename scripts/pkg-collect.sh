@@ -6,11 +6,18 @@
 #
 # Every .deb / .rpm under the source directories is copied to DEST as
 #     <build-name-without-extension>.<slug>.<deb|rpm>
-# e.g. liblibrescrs5_5.0.0-1_amd64.deb -> liblibrescrs5_5.0.0-1_amd64.debian13.deb.
+# e.g. liblibrescrs5_5.0.0-1~deb13_amd64.deb
+#     -> liblibrescrs5_5.0.0-1.deb13_amd64.debian13.deb.
 # The slug is in the name because Debian 13 and Ubuntu 26.04 build different
 # bytes under identical names; without it one release asset silently replaces
 # the other, and a downstream `gh release download -p '*.<slug>.deb'` could not
 # ask for the build made for its own distribution.
+#
+# A '~' in the build name (a distribution revision, 5.0.0-1~deb13) becomes '.'
+# in the asset name: GitHub renames special characters in asset names by a rule
+# that is not documented, and a renamed asset would separate SHA256SUMS from the
+# file that was downloaded. The name is never mapped back -- the publisher reads
+# Package and Version from the package itself.
 #
 # Refused, with exit 1 and nothing half-copied left behind as a success:
 #   * a debug package (-dbgsym_, .ddeb, -debuginfo-, -debugsource-): the
@@ -48,7 +55,7 @@ for f in "${files[@]}"; do
     case "$stem" in
         *."$slug") echo "REFUSED $f: already carries the slug -- collected twice?"; bad=1; continue ;;
     esac
-    name="$stem.$slug.$ext"
+    name="${stem//\~/.}.$slug.$ext"
     if [ -n "${want[$name]+x}" ]; then
         echo "REFUSED $f: asset name $name is also wanted by ${want[$name]}"; bad=1; continue
     fi

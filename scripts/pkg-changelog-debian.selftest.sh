@@ -59,6 +59,12 @@ grep -qx ' -- LibreSCRS <librescrs@proton.me>  Thu, 01 Jan 1970 00:00:00 +0000' 
 head -n 1 "$work/cl" | grep -qx 'librescrs-x (5.0.0-1) unstable; urgency=medium'; expect "version and revision from VERSION" 0 $?
 
 mk "## 5.0.0
+- **A headline.**"
+EPOCH=0 DEB_REVISION=1~deb13 gen
+head -n 1 "$work/cl" | grep -qx 'librescrs-x (5.0.0-1~deb13) unstable; urgency=medium'; expect "a distribution revision reaches the first line" 0 $?
+DEB_REVISION='1 x' gen; expect "a revision that is not a revision is red" 1 $?
+
+mk "## 5.0.0
 - **Removed \`src/utils/utils.h\`, a header with one macro.**"
 gen; expect "a source path in a headline is red" 1 $?
 mk "## 5.0.0
