@@ -8,6 +8,11 @@
 #   pkg-images manager <slug>    print apt | dnf | zypper
 #   pkg-images family <slug>     print deb | rpm
 #   pkg-images slugs             print every slug, one per line
+#   pkg-images tool-image <name> print <repository>:<tag>@sha256:<digest> of a
+#                                tool container (never a distribution slug)
+#   pkg-images add tool-image <name> <repository>:<tag>
+#                                resolve that one digest and append its row;
+#                                no other row is touched
 #   pkg-images check             the form of the lock (offline)
 #   pkg-images refresh [--dry-run]
 #                                re-resolve every image digest from its
@@ -17,8 +22,9 @@
 # found next to this script unless PKG_IMAGES_LOCK names another one.
 # PKG_IMAGES_RESOLVER replaces the network for the self-test.
 #
-# Exit codes: 0 answered / green, 1 a finding (a malformed lock), 2 cannot
-# judge (no lock, unknown slug, registry unreachable).
+# Exit codes: 0 answered / green, 1 a finding (a malformed lock, a name already
+# in the lock), 2 cannot judge (no lock, unknown slug or name, bad usage,
+# registry unreachable).
 set -uo pipefail
 
 here="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)" || exit 2
@@ -35,6 +41,14 @@ image_row() {  # image_row SLUG -> "slug manager ref", or exit 2
     r="$(rows image | awk -v s="$1" '$2 == s { print $2, $3, $4 }')"
     [ -n "$r" ] || die2 "unknown slug '$1' (known: $(rows image | awk '{printf "%s ", $2}'))"
     [ "$(printf '%s\n' "$r" | wc -l)" -eq 1 ] || die2 "slug '$1' appears more than once"
+    printf '%s\n' "$r"
+}
+
+tool_image_row() {  # tool_image_row NAME -> "name ref", or exit 2
+    local r
+    r="$(rows tool-image | awk -v s="$1" '$2 == s { print $2, $3 }')"
+    [ -n "$r" ] || die2 "unknown tool-image '$1' (known: $(rows tool-image | awk '{printf "%s ", $2}'))"
+    [ "$(printf '%s\n' "$r" | wc -l)" -eq 1 ] || die2 "tool-image '$1' appears more than once"
     printf '%s\n' "$r"
 }
 
@@ -58,11 +72,22 @@ cmd_check() {
             [ -z "${seen[img:$slug]+x}" ] || { echo "FAIL line $n: slug '$slug' twice"; fail=1; }
             seen[img:$slug]=1
             ;;
+        tool-image)
+            read -r kind slug ref extra <<<"$line"
+            if [ -z "${ref:-}" ] || [ -n "${extra:-}" ]; then
+                echo "FAIL line $n: want 'tool-image <name> <repo>:<tag>@sha256:<64 hex>': $line"; fail=1; continue
+            fi
+            [[ "$slug" =~ ^[a-z][a-z0-9-]*$ ]] || { echo "FAIL line $n: tool-image name '$slug' is not [a-z][a-z0-9-]*"; fail=1; }
+            [[ "$ref" =~ ^[a-z0-9.-]+/[a-z0-9._/-]+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$ ]] \
+                || { echo "FAIL line $n: '$ref' is not <registry>/<repo>:<tag>@sha256:<64 hex>"; fail=1; }
+            [ -z "${seen[tool:$slug]+x}" ] || { echo "FAIL line $n: tool-image '$slug' twice"; fail=1; }
+            seen[tool:$slug]=1
+            ;;
         *) echo "FAIL line $n: unknown row kind '$kind'"; fail=1 ;;
         esac
     done <"$LOCK"
     [ -n "$(rows image)" ] || { echo "FAIL the lock names no image"; fail=1; }
-    [ "$fail" -eq 0 ] && echo "pkg-images check: $(rows image | wc -l) image(s), well-formed"
+    [ "$fail" -eq 0 ] && echo "pkg-images check: $(rows image | wc -l) image(s), $(rows tool-image | wc -l) tool-image(s), well-formed"
     return "$fail"
 }
 
@@ -94,13 +119,20 @@ cmd_refresh() {
     tmp="$work/lock"
     while IFS= read -r line; do
         read -r kind slug mgr ref _ <<<"$line"
-        if [ "$kind" = image ]; then
+        if [ "$kind" = tool-image ]; then  # tool-image <name> <ref>: no manager column
+            ref="$mgr"; mgr=""
+        fi
+        if [ "$kind" = image ] || [ "$kind" = tool-image ]; then
             repo="${ref%%:*}"; tag="${ref#*:}"; tag="${tag%%@*}"; old="${ref##*@}"
             new="$(resolve "$repo" "$tag")" || { echo "pkg-images: cannot resolve $repo:$tag" >&2; return 2; }
             if [ "$new" != "$old" ]; then
                 echo "moved  $slug  $repo:$tag  ${old#sha256:} -> ${new#sha256:}"
                 changed=$((changed + 1))
-                line="$(printf '%-5s %-11s %-6s %s' image "$slug" "$mgr" "$repo:$tag@$new")"
+                if [ "$kind" = image ]; then
+                    line="$(printf '%-5s %-11s %-6s %s' image "$slug" "$mgr" "$repo:$tag@$new")"
+                else
+                    line="$(printf '%s %s %s' tool-image "$slug" "$repo:$tag@$new")"
+                fi
             else
                 echo "same   $slug  $repo:$tag"
             fi
@@ -114,6 +146,30 @@ cmd_refresh() {
     fi
 }
 
+# add tool-image NAME REPO:TAG -- resolve that one digest and append its row.
+# Every other row (and the header, and the "Measured" date) stays as it is;
+# `refresh` cannot do this: it refuses a row without a digest and would move
+# every other image too.
+cmd_add() {
+    [ "${1:-}" = tool-image ] && [ $# -eq 3 ] || die2 "usage: add tool-image <name> <repository>:<tag>"
+    local name="$2" ref="$3" repo tag digest tmp
+    [[ "$name" =~ ^[a-z][a-z0-9-]*$ ]] || die2 "tool-image name '$name' is not [a-z][a-z0-9-]*"
+    [[ "$ref" =~ ^[a-z0-9.-]+/[a-z0-9._/-]+:[A-Za-z0-9._-]+$ ]] \
+        || die2 "'$ref' is not <registry>/<repository>:<tag> (a tag is required)"
+    cmd_check >/dev/null || { cmd_check; die2 "the lock is malformed -- refusing to extend it"; }
+    if [ -n "$(rows tool-image | awk -v s="$name" '$2 == s')" ]; then
+        echo "pkg-images: tool-image '$name' is already in the lock (use refresh to move it)" >&2
+        return 1
+    fi
+    repo="${ref%:*}"; tag="${ref##*:}"
+    digest="$(resolve "$repo" "$tag")" || die2 "cannot resolve $repo:$tag"
+    tmp="$(mktemp "${TMPDIR:-/var/tmp}/pkg-images-add.XXXXXX")" || die2 "no temporary directory"
+    trap 'rm -f "$tmp"' RETURN
+    { cat "$LOCK"; [ -z "$(tail -c1 "$LOCK")" ] || echo; printf 'tool-image %s %s@%s\n' "$name" "$repo:$tag" "$digest"; } >"$tmp"
+    cat "$tmp" >"$LOCK"
+    echo "pkg-images: added tool-image $name $repo:$tag@$digest"
+}
+
 cmd="${1:-}"; shift || true
 case "$cmd" in
     get)     [ $# -eq 1 ] || die2 "usage: get <slug>"; image_row "$1" | awk '{ print $3 }' ;;
@@ -122,7 +178,9 @@ case "$cmd" in
              m="$(image_row "$1" | awk '{ print $2 }')" || exit 2
              case "$m" in apt) echo deb ;; dnf|zypper) echo rpm ;; *) die2 "manager '$m'" ;; esac ;;
     slugs)   rows image | awk '{ print $2 }' ;;
+    tool-image) [ $# -eq 1 ] || die2 "usage: tool-image <name>"; tool_image_row "$1" | awk '{ print $2 }' ;;
+    add)     cmd_add "$@" ;;
     check)   cmd_check ;;
     refresh) cmd_refresh "$@" ;;
-    *) die2 "usage: pkg-images get|manager|family|slugs|check|refresh" ;;
+    *) die2 "usage: pkg-images get|manager|family|slugs|tool-image|add|check|refresh" ;;
 esac

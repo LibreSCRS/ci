@@ -3,7 +3,7 @@
 # scripts/pkg-images; refreshed ONLY by `scripts/pkg-images refresh`, never by
 # hand, and held by `scripts/pkg-images check`.
 #
-# One row kind:
+# Two row kinds:
 #
 #   image <slug> <manager> <repository>:<tag>@sha256:<digest>
 #       One container image per distribution slug. The slug is the suffix every
@@ -11,6 +11,11 @@
 #       apt | dnf | zypper and decides the family (apt -> deb, else rpm). The tag
 #       is kept only so `refresh` knows what to re-resolve: docker pulls by the
 #       digest and ignores the tag once both are given.
+#
+#   tool-image <name> <repository>:<tag>@sha256:<digest>
+#       A container a CI step runs a tool in, never a slug: it names no
+#       distribution and `slugs` never lists it. Added with
+#       `pkg-images add tool-image`, moved by `refresh` like any image.
 #
 # Measured 2026-09-26 against registry-1.docker.io (image index digests).
 
@@ -20,3 +25,4 @@ image fedora43    dnf    docker.io/library/fedora:43@sha256:a651ddf48ea28a06ed4e
 image fedora44    dnf    docker.io/library/fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
 image opensusetw  zypper docker.io/opensuse/tumbleweed:latest@sha256:007fde2c1e6b3de48681c765b3d6905d4e59d2f7a26f4585ec49dd11305c3fe7
 image leap160     zypper docker.io/opensuse/leap:16.0@sha256:1e710a28227dea189500dd49a9ccd2b9f218e059329354abdb1297ee94d2dcd4
+tool-image archlinux docker.io/library/archlinux:base-devel@sha256:061679925e5d5028f2df9395d441ce6c4b9accf0157ff3486c06b6962e014ef1
