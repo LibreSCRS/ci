@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: Sign the RPM packages
+description: >
+  Sign every *.rpm under a directory inside each distribution's own image and
+  verify each one strictly against the certificate of the key set: the package
+  key on a publish, the public rehearsal key on a rehearsal. .deb files are not
+  touched -- apt trusts the signed index.
+inputs:
+  mode:
+    description: 'publish | rehearse'
+    required: true
+  packages:
+    description: 'directory holding the packages'
+    required: true
+  key:
+    description: 'the armored package-signing subkey (publish only; empty on a rehearsal)'
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        PKGS: ${{ inputs.packages }}
+        KEY: ${{ inputs.key }}
+      run: |
+        set -euo pipefail
+        s="$GITHUB_ACTION_PATH/../../scripts"
+        case "$MODE" in
+          publish)
+            [ -n "$KEY" ] || { echo "::error::publish without the package-signing key"; exit 1; }
+            k="$(mktemp -d "$RUNNER_TEMP/k.XXXXXX")"; trap 'rm -rf "$k"' EXIT
+            printf '%s\n' "$KEY" > "$k/key.asc"
+            bash "$s/pkg-sign.sh" --dir "$PKGS" --keyset package-signing --key "$k/key.asc" ;;
+          rehearse)
+            [ -z "$KEY" ] || { echo "::error::a rehearsal received the real key -- refusing"; exit 1; }
+            bash "$s/pkg-sign.sh" --dir "$PKGS" --keyset rehearsal ;;
+          *) echo "::error::mode '$MODE'"; exit 1 ;;
+        esac
