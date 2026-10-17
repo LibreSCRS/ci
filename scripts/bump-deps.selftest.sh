@@ -144,6 +144,18 @@ printf 'LibreAgent %s/LibreAgent %s\n' "$BUMP_DEPS_URL_BASE" "$(git -C "$WS/Libr
 expect 1 "a deps.lock in the graph's root is a finding" 'RED: LibreMiddleware is the root of the dependency graph' -- \
     "$BD" check --root "$WS/LibreMiddleware"
 rm -f "$WS/LibreMiddleware/deps.lock"
+# packages publishes every release and builds none: lock-free, like the root.
+mkdir -p "$T/pk/packages"
+expect 0 "packages, the publisher, locks nothing" "" -- "$BD" check --root "$T/pk/packages"
+assert "and says so" -- grep -q 'ok: packages depends on no LibreSCRS repository' "$T/out"
+printf 'LibreCelik %s/LibreCelik %s\n' "$BUMP_DEPS_URL_BASE" "$(git -C "$WS/LibreCelik" rev-parse HEAD)" >"$T/pk/packages/deps.lock"
+expect 1 "a deps.lock in packages is a finding" 'RED: packages publishes the released packages and builds no LibreSCRS repository' -- \
+    "$BD" check --root "$T/pk/packages"
+rm -f "$T/pk/packages/deps.lock"
+printf 'packages %s/packages %040d\n' "$BUMP_DEPS_URL_BASE" 0 >>"$WS/LibreCelik/deps.lock"
+expect 1 "a consumer's lock naming packages is a finding" 'LibreCelik does not depend on packages' -- \
+    "$BD" check --root "$WS/LibreCelik" --no-remote
+git -C "$WS/LibreCelik" checkout -q -- deps.lock
 mkdir -p "$T/LibreFoo"
 expect 2 "a repository the graph does not know cannot be judged" 'cannot tell which repository' -- \
     "$BD" check --root "$T/LibreFoo"

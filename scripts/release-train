@@ -4,14 +4,24 @@
 #               [--root <dir>] [--ledger <file>]
 #
 # The whole LibreSCRS release, from one local command, in the order the
-# repositories build each other:
+# repositories build each other. Eight clones are released; a ninth, packages,
+# is never tagged by the train: it is frozen, rehearsed and dispatched to
+# publish the signed package repository.
 #
-#   0 preflight  all eight clones clean, on main, HEAD == origin main; CI green
+#   0 preflight  all nine clones clean, on main, HEAD == origin main; CI green
 #                on each HEAD; VERSION and the CHANGELOG section say <version>
 #                in the seven code repositories; no tag and no release
 #                <version> yet; gh authenticated; the release key healthy
 #                (primary and signing subkey valid for more than six months,
-#                secret present) and unlocked in the agent; bump-deps check.
+#                secret present) and unlocked in the agent; bump-deps check;
+#                keys/package-signing.env present, its PACKAGE_FPR certified
+#                by the release key (packages' KEYS and the certificate beside
+#                the env, keys/package-signing.asc, in a keyring of its own);
+#                in each repository that signs packages, the one LibreSCRS/ci
+#                commit its workflows pin carries keys/package-signing.asc and
+#                .env byte for byte as this checkout does (they sign with
+#                that commit's keys, not this one's);
+#                `pkg-repo.py watch` green on the live repository.
 #   1 lock       per layer: bump-deps to-head where a lock is behind (and, with
 #                --prepare, the CHANGELOG heading renamed to "[<version>] —
 #                <date>"), the diff shown, ONE question per layer, push, wait
@@ -20,8 +30,10 @@
 #   2 freeze     again: every HEAD == origin main, nothing behind, bump-deps
 #                check; the eight SHAs go into the ledger. From here on main
 #                must not move -- a --resume that finds it moved stops.
-#   3 rehearse   `release.yml mode=rehearse` dispatched on main in all seven,
-#                every run waited for; one red run stops the train.
+#   3 rehearse   `release.yml mode=rehearse` dispatched on main in all seven
+#                and in packages, every run waited for; one red run stops the
+#                train. Then packages' `publish.yml mode=rehearse` with the
+#                rehearsal run ids of the repositories it publishes.
 #   4 tag        per layer LM -> LA -> {LL, LD} -> {LC, LK} -> LMAC:
 #                `bump-deps check --tag` for the consumer, `git tag -s` on the
 #                frozen commit, verify-release-tag.sh (the release workflow's
@@ -31,27 +43,50 @@
 #                download it and run release-seal.sh verify-release
 #                (sha256sum -c, cosign verify-blob against the tag's identity,
 #                gh attestation verify).
-#   5 site       gen-artifacts-data --ref <version>, check_download_claims,
-#                commit, ONE question, push, wait for the deploy, and the
-#                English and Serbian download pages must name <version>.
-#   6 ledger     every step, SHA, run id and verdict, in the ledger file.
+#   5 packages   ONE question, `publish.yml mode=publish` dispatched on packages'
+#                main and waited for; then, retried while the CDN may still
+#                serve the previous generation (max-age=600; up to 15 minutes):
+#                the live trixie InRelease verifies against the live KEY.asc as
+#                signed by S_IDX_FPR, the Packages.xz it names (read by-hash)
+#                carries librecelik <version>-1~deb13, and the fedora44
+#                repomd.xml the same way: librecelik <version> in its primary.
+#   6 site       gen-artifacts-data --ref <version>, check_download_claims
+#                (given the packages clone), commit, ONE question, push, wait
+#                for the deploy, and the English and Serbian download pages
+#                must name <version>.
+#   7 ledger     every step, SHA, run id and verdict, in the ledger file.
 #
 # --rehearse-only runs 0, 2 and 3 and pushes nothing. --resume continues a
 # train from its ledger: a step recorded as done is not redone, a tag that
 # exists locally is reused (and judged again), and the frozen SHAs must still
-# be the HEADs. Without --resume an existing ledger is refused.
+# be the HEADs -- with two exceptions. The site may carry the train's own
+# "Downloads: release <version>" commit on top of its frozen SHA (pushed or
+# not). And once a tag is out, packages is no longer held to its freeze: a
+# fix to a red publish must be able to land, so its publish is dispatched on
+# whatever main is then, and that commit's CI must be green. Without --resume
+# an existing ledger is refused.
 #
 # Nothing is pushed without the literal answer `yes`, typed on the terminal
 # (the prompt reads /dev/tty; there is no flag that answers for you). The
 # self-test alone points RELEASE_TRAIN_TTY at a file of answers.
 #
-# Environment: LIBRESCRS_ROOT (the directory holding the eight clones side by
+# Environment: LIBRESCRS_ROOT (the directory holding the nine clones side by
 # side; --root wins; default: the parent of this script's checkout),
 # EXPECTED_FPR (the release key's primary fingerprint), RELEASE_TRAIN_ORG
 # (default LibreSCRS), BUMP_DEPS (default: bump-deps beside this script),
 # RELEASE_TRAIN_POLL (seconds between polls, default 15),
 # RELEASE_TRAIN_WAIT (seconds to wait for a run to appear, default 600),
-# SITE_URL_EN / SITE_URL_SR (the two download pages).
+# SITE_URL_EN / SITE_URL_SR (the two download pages), PACKAGES_URL (the
+# published package repository), PACKAGE_KEYS (default:
+# keys/package-signing.env of this checkout), PACKAGE_CERT (default: the .asc
+# beside PACKAGE_KEYS -- the one certificate the packages carry and the
+# repository serves), PKG_REPO (default: pkg-repo.py
+# beside this script), RELEASE_TRAIN_CI (the LibreSCRS/ci clone the
+# consumers' pins are read from; default: this script's checkout),
+# RELEASE_TRAIN_LIVE_WAIT / RELEASE_TRAIN_LIVE_POLL
+# (seconds the live repository is retried for, and between tries; default
+# 900 and 60), RELEASE_TRAIN_PAGES_WAIT / RELEASE_TRAIN_PAGES_POLL (the same
+# for the download pages after the site deploy; default 900 and 60).
 #
 # Exit: 0 done - 1 a check failed, a run was red, or an answer was not `yes`
 #       (the train stops where it is; --resume continues) - 2 cannot judge
@@ -69,6 +104,16 @@ POLL="${RELEASE_TRAIN_POLL:-15}"
 WAIT="${RELEASE_TRAIN_WAIT:-600}"
 SITE_URL_EN="${SITE_URL_EN:-https://librescrs.github.io/downloads/}"
 SITE_URL_SR="${SITE_URL_SR:-https://librescrs.github.io/sr/downloads/}"
+PACKAGES_URL="${PACKAGES_URL:-https://librescrs.github.io/packages}"
+PACKAGES_URL="${PACKAGES_URL%/}"
+PACKAGE_KEYS="${PACKAGE_KEYS:-$here/../keys/package-signing.env}"
+PACKAGE_CERT="${PACKAGE_CERT:-${PACKAGE_KEYS%.env}.asc}"
+PKG_REPO="${PKG_REPO:-$here/pkg-repo.py}"
+CI_CLONE="${RELEASE_TRAIN_CI:-$here/..}"
+LIVE_WAIT="${RELEASE_TRAIN_LIVE_WAIT:-900}"
+LIVE_POLL="${RELEASE_TRAIN_LIVE_POLL:-60}"
+PAGES_WAIT="${RELEASE_TRAIN_PAGES_WAIT:-900}"
+PAGES_POLL="${RELEASE_TRAIN_PAGES_POLL:-60}"
 TTY="${RELEASE_TRAIN_TTY:-/dev/tty}"
 SIX_MONTHS=$((183 * 86400))
 
@@ -76,6 +121,11 @@ LAYERS=("LibreMiddleware" "LibreAgent" "LibreLinux LibreDarwin" "LibreCelik Libr
 CODE=(LibreMiddleware LibreAgent LibreLinux LibreDarwin LibreCelik LibreKDE LibreMac)
 SITE=LibreSCRS.github.io
 ALL=("${CODE[@]}" "$SITE")
+# Not tagged and not in ALL: frozen, rehearsed and dispatched only.
+PACKAGES=packages
+CLONES=("${ALL[@]}" "$PACKAGES")
+# The repositories packages' publish.yml takes rehearsal runs from.
+PKG_SOURCES=(LibreMiddleware LibreAgent LibreLinux LibreCelik LibreKDE "$PACKAGES")
 
 die() { echo "release-train: $*" >&2; exit "${RC:-1}"; }
 cannot() { RC=2 die "$* -- cannot judge"; }
@@ -104,11 +154,11 @@ if [ -z "$ROOT" ]; then
 fi
 ROOT="$(cd -- "$ROOT" 2>/dev/null && pwd)" || cannot "the clone root '$ROOT' is not a directory"
 LEDGER="${LEDGER:-$ROOT/release-train-$V.ledger}"
-for t in git gh gpg gpg-connect-agent cosign python3 curl; do
+for t in git gh gpg gpg-connect-agent cosign python3 curl gpgv xz zstd; do
     command -v "$t" >/dev/null 2>&1 || cannot "$t is not on PATH"
 done
 [ -f "$BUMP_DEPS" ] || cannot "no bump-deps at $BUMP_DEPS"
-for r in "${ALL[@]}"; do
+for r in "${CLONES[@]}"; do
     git -C "$ROOT/$r" rev-parse --git-dir >/dev/null 2>&1 || cannot "$ROOT/$r is not a git clone"
 done
 echo "release-train $V over $ROOT (ledger $LEDGER)"
@@ -150,6 +200,13 @@ ask() {
 slug() { printf '%s/%s' "$ORG" "$1"; }
 remote_main() { git -C "$ROOT/$1" ls-remote origin refs/heads/main 2>/dev/null | awk '$2=="refs/heads/main"{print $1}'; }
 ci_workflow() { if [ "$1" = "$SITE" ]; then echo deploy.yml; else echo ci.yml; fi; }
+# Once a tag is out there is no way back, and packages may need a fix.
+tags_started() { grep -q '^tag [^ ]* done' "$LEDGER"; }
+# own_site_commit <sha> <base>: <sha> is the train's own site commit, directly on <base>.
+own_site_commit() {
+    [ -n "$2" ] && [ "$(git -C "$ROOT/$SITE" rev-parse -q --verify "$1^" 2>/dev/null)" = "$2" ] \
+        && [ "$(git -C "$ROOT/$SITE" log -1 --format=%s "$1" 2>/dev/null)" = "Downloads: release $V" ]
+}
 
 # json <python-expression over d> < json: a tiny jq, so jq is not required.
 json() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
@@ -230,15 +287,94 @@ key_health() {
     echo "  release key: signing subkey ${sub:0:16}... valid beyond six months, unlocked"
 }
 
+# package_keys <NAME>: a fingerprint from keys/package-signing.env.
+package_keys() {
+    sed -n "s/^$1=\([0-9A-F]\{40\}\)\$/\1/p" "$PACKAGE_KEYS" 2>/dev/null | head -n 1
+}
+
+# gpg_scratch: a GNUPGHOME of its own under /var/tmp, never the caller's
+# keyring; drop_scratch stops what gpg started there and removes it.
+gpg_scratch() {
+    local d
+    d="$(mktemp -d "/var/tmp/release-train-gpg.XXXXXX")" || return 1
+    chmod 700 "$d" && printf '%s' "$d"
+}
+drop_scratch() {
+    local h
+    for h in "$1" "$1/try"; do [ -d "$h" ] && gpgconf --homedir "$h" --kill all >/dev/null 2>&1; done
+    rm -rf -- "$1"
+}
+
+# package_key_certified: the package key is the one the release key vouches
+# for -- a valid certification by EXPECTED_FPR on a user id of PACKAGE_FPR,
+# judged from packages' own KEYS and the package certificate only. The
+# certificate is read where it lives, beside its fingerprints: the keyring
+# packages, the served KEY.asc and every signature check take it from there, so
+# a copy anywhere else would be certified while users received another.
+package_key_certified() {
+    local pfpr home ok
+    [ -f "$PACKAGE_KEYS" ] || { echo "::error::no $PACKAGE_KEYS -- the package signing key's fingerprints"; return 1; }
+    pfpr="$(package_keys PACKAGE_FPR)"
+    [ -n "$pfpr" ] && [ -n "$(package_keys S_IDX_FPR)" ] \
+        || { echo "::error::$PACKAGE_KEYS names no PACKAGE_FPR or S_IDX_FPR"; return 1; }
+    [ -f "$PACKAGE_CERT" ] || { echo "::error::no $PACKAGE_CERT -- the package signing certificate"; return 1; }
+    home="$(gpg_scratch)" || { echo "::error::cannot make a scratch keyring under /var/tmp"; return 1; }
+    if ! gpg --homedir "$home" --batch --quiet --import "$ROOT/$PACKAGES/KEYS" "$PACKAGE_CERT" >/dev/null 2>&1; then
+        drop_scratch "$home"; echo "::error::$PACKAGES: KEYS or $PACKAGE_CERT does not import"; return 1
+    fi
+    ok="$(gpg --homedir "$home" --batch --with-colons --check-sigs "$pfpr" 2>/dev/null | awk -F: -v want="$EXPECTED_FPR" '
+        $1=="uid" { u = 1; next }
+        $1=="sub" || $1=="pub" { u = 0 }
+        u && $1=="sig" && $2=="!" && $13==want { c = 1 }
+        u && $1=="rev" && $2=="!" && $13==want { r = 1 }
+        END { print (c && !r) ? "yes" : "no" }')"
+    drop_scratch "$home"
+    [ "$ok" = yes ] || { echo "::error::$PACKAGE_CERT ($pfpr) carries no valid certification by the release key $EXPECTED_FPR"; return 1; }
+    echo "  package key ${pfpr:0:16}... certified by the release key"
+}
+
+# ci_pin <file>...: the one LibreSCRS/ci commit the files pin, comments
+# aside (as check-workflows reads them); rc 1 when they pin none or more than one.
+ci_pin() {
+    local pin
+    pin="$(cat -- "$@" 2>/dev/null \
+        | sed -e '/^[[:space:]]*#/d' -e 's/[[:space:]]#.*$//' \
+        | sed -n 's|.*LibreSCRS/ci/actions/[A-Za-z0-9_-]*@\([0-9a-f]\{40\}\).*|\1|p' | sort -u)"
+    [ -n "$pin" ] && [ "$(printf '%s\n' "$pin" | wc -l)" -eq 1 ] && printf '%s' "$pin"
+}
+
+# signing_pins_carry_package_key: the repositories that sign packages read the
+# package key from keys/ of the LibreSCRS/ci commit they pin, never from this
+# checkout. A pin without this key passes every rehearsal (it signs with the
+# rehearsal key) and fails the first tag's sign job -- a tag that cannot move.
+signing_pins_carry_package_key() {
+    local r pin f bad=0 one
+    for r in "${PKG_SOURCES[@]}"; do
+        pin="$(ci_pin "$ROOT/$r"/.github/workflows/*.yml "$ROOT/$r"/.github/workflows/*.yaml)" \
+            || { echo "::error::$r: no single LibreSCRS/ci pin in .github/workflows"; bad=1; continue; }
+        git -C "$CI_CLONE" cat-file -e "$pin^{commit}" 2>/dev/null \
+            || cannot "$r: LibreSCRS/ci ${pin:0:12} (its workflows' pin) is not in $CI_CLONE: fetch ci"
+        one=0
+        for f in "package-signing.asc:$PACKAGE_CERT" "package-signing.env:$PACKAGE_KEYS"; do
+            if ! git -C "$CI_CLONE" show "$pin:keys/${f%%:*}" 2>/dev/null | cmp -s - "${f#*:}"; then
+                echo "::error::$r: keys/${f%%:*} at its LibreSCRS/ci pin ${pin:0:12} is not ${f#*:}"; one=1
+            fi
+        done
+        [ "$one" = 1 ] && { bad=1; continue; }
+        echo "  $r: its LibreSCRS/ci pin ${pin:0:12} carries the package key"
+    done
+    return "$bad"
+}
+
 preflight() {
     say "0 preflight"
-    local r bad=0 head rm br login
+    local r bad=0 head rm br login watch_rc
     # Ask what the train uses -- the active account -- not `gh auth status`,
     # which exits 1 when any other stored account is broken.
     login="$(gh api user --jq .login 2>/dev/null)" && [ -n "$login" ] \
         || cannot "gh is not authenticated"
     echo "  gh: $login"
-    for r in "${ALL[@]}"; do
+    for r in "${CLONES[@]}"; do
         head="$(git -C "$ROOT/$r" rev-parse HEAD)"
         br="$(git -C "$ROOT/$r" symbolic-ref -q --short HEAD || echo '(detached)')"
         rm="$(remote_main "$r")"
@@ -246,7 +382,15 @@ preflight() {
             echo "::error::$r: the working tree is not clean"; bad=1; continue
         fi
         [ "$br" = main ] || { echo "::error::$r: on $br, not main"; bad=1; continue; }
+        if [ "$r" = "$PACKAGES" ] && tags_started; then
+            echo "  $r: clean, on main; judged again at the publish dispatch (tags are out)"; continue
+        fi
         if [ "$head" != "$rm" ]; then
+            # The train's own site commit, declined before its push.
+            if [ "$r" = "$SITE" ] && [ "$(ledger_detail freeze "$r")" = "$rm" ] && own_site_commit "$head" "$rm"; then
+                ci_green "$r" "$rm" || { echo "::error::$r: $(ci_workflow "$r") is not green on ${rm:0:12}"; bad=1; continue; }
+                echo "  $r: clean, the train's own site commit on origin main ${rm:0:12}, CI green"; continue
+            fi
             echo "::error::$r: HEAD ${head:0:12} is not origin main ${rm:0:12}"; bad=1; continue
         fi
         if ! ci_green "$r" "$head"; then
@@ -272,7 +416,28 @@ preflight() {
     "$BUMP_DEPS" check --workspace "$ROOT" >"$ROOT/.release-train-bump.log" 2>&1 \
         || { sed 's/^/  | /' "$ROOT/.release-train-bump.log"; echo "::error::bump-deps check is not green"; bad=1; }
     rm -f "$ROOT/.release-train-bump.log"
+    package_key_certified || bad=1
+    signing_pins_carry_package_key || bad=1
+    watch_rc=0
+    "$PKG_REPO" watch --url "$PACKAGES_URL" --keyset package-signing --min-days 14 \
+        >"$ROOT/.release-train-watch.log" 2>&1 || watch_rc=$?
+    if [ "$watch_rc" != 0 ]; then
+        sed 's/^/  | /' "$ROOT/.release-train-watch.log"
+        # Between the first tag and the first publish a code release exists and
+        # nothing is deployed yet: watch's "404 after a release" is this train's
+        # own state, not a vanished repository. The publish step judges the
+        # live repository itself.
+        if [ "$watch_rc" = 1 ] && tags_started && ! done_in_ledger packages-publish "$PACKAGES" \
+            && grep -q 'is HTTP 404, but .* released -- the published repository is gone' "$ROOT/.release-train-watch.log"; then
+            echo "  watch: no published repository yet -- expected, the tags are out and $PACKAGES has not published"
+            watch_rc=0
+        elif [ "$watch_rc" != 2 ]; then
+            echo "::error::pkg-repo.py watch is not green on $PACKAGES_URL"; bad=1
+        fi
+    fi
+    rm -f "$ROOT/.release-train-watch.log"
     [ "$bad" = 0 ] || die "preflight failed -- nothing was changed"
+    [ "$watch_rc" != 2 ] || cannot "pkg-repo.py watch could not judge $PACKAGES_URL"
     ledger preflight "-" "done"
 }
 
@@ -355,10 +520,16 @@ lock() {
 freeze() {
     say "2 freeze"
     local r head rm bad=0 prior need
-    for r in "${ALL[@]}"; do
+    for r in "${CLONES[@]}"; do
+        if [ "$r" = "$PACKAGES" ] && tags_started; then continue; fi
         head="$(git -C "$ROOT/$r" rev-parse HEAD)"; rm="$(remote_main "$r")"
-        [ "$head" = "$rm" ] || { echo "::error::$r: HEAD ${head:0:12} != origin main ${rm:0:12}"; bad=1; continue; }
         prior="$(ledger_detail freeze "$r")"
+        # The site's own commit, pushed or not, is the train's, not a move.
+        if [ "$r" = "$SITE" ] && [ -n "$prior" ] && own_site_commit "$head" "$prior" \
+                && { [ "$rm" = "$head" ] || [ "$rm" = "$prior" ]; }; then
+            continue
+        fi
+        [ "$head" = "$rm" ] || { echo "::error::$r: HEAD ${head:0:12} != origin main ${rm:0:12}"; bad=1; continue; }
         if [ -n "$prior" ] && [ "$prior" != "$head" ]; then
             echo "::error::$r: main moved after the freeze (${prior:0:12} -> ${head:0:12})"; bad=1; continue
         fi
@@ -367,7 +538,7 @@ freeze() {
     [ -z "$need" ] || { echo "::error::locks behind upstream main: ${need//$'\n'/ }"; bad=1; }
     "$BUMP_DEPS" check --workspace "$ROOT" >/dev/null 2>&1 || { echo "::error::bump-deps check is not green"; bad=1; }
     [ "$bad" = 0 ] || die "freeze failed"
-    for r in "${ALL[@]}"; do
+    for r in "${CLONES[@]}"; do
         done_in_ledger freeze "$r" || ledger freeze "$r" "done" "$(git -C "$ROOT/$r" rev-parse HEAD)"
         echo "  $r frozen at $(ledger_detail freeze "$r" | cut -c1-12)"
     done
@@ -378,7 +549,7 @@ rehearse() {
     say "3 rehearse"
     local r sha before id pending=() bad=0
     declare -A BEFORE=() RUN=()
-    for r in "${CODE[@]}"; do
+    for r in "${CODE[@]}" "$PACKAGES"; do
         done_in_ledger rehearse "$r" && { echo "  $r: rehearsed earlier (run $(ledger_detail rehearse "$r"))"; continue; }
         sha="$(ledger_detail freeze "$r")"
         BEFORE[$r]="$(run_ids "$r" release.yml "$sha" workflow_dispatch | tr '\n' ' ')"
@@ -402,6 +573,31 @@ rehearse() {
         fi
     done
     [ "$bad" = 0 ] || die "a rehearsal is red -- nothing was tagged"
+}
+
+# rehearse_packages: packages' publisher over the rehearsal runs above --
+# assembled, signed with a throwaway key and probed, never deployed.
+rehearse_packages() {
+    say "3b rehearse the package repository"
+    local r rid runs="" sha before id
+    if done_in_ledger packages-rehearse "$PACKAGES"; then
+        echo "  $PACKAGES: publisher rehearsed earlier (run $(ledger_detail packages-rehearse "$PACKAGES"))"; return 0
+    fi
+    for r in "${PKG_SOURCES[@]}"; do
+        rid="$(ledger_detail rehearse "$r")"
+        [ -n "$rid" ] || die "$r: no green rehearsal run in the ledger to publish from"
+        runs+="${runs:+ }$r=$rid"
+    done
+    sha="$(ledger_detail freeze "$PACKAGES")"
+    before="$(run_ids "$PACKAGES" publish.yml "$sha" workflow_dispatch | tr '\n' ' ')"
+    gh workflow run publish.yml -R "$(slug "$PACKAGES")" --ref main -f mode=rehearse -f runs="$runs" >/dev/null 2>&1 \
+        || die "$PACKAGES: could not dispatch publish.yml mode=rehearse"
+    id="$(wait_new_run "$PACKAGES" publish.yml "$sha" workflow_dispatch "$before")" \
+        || die "$PACKAGES: the publish.yml rehearsal run never appeared"
+    watch_run "$PACKAGES" "$id" \
+        || { ledger packages-rehearse "$PACKAGES" red "$id"; die "$PACKAGES: publish.yml rehearsal run $id is red -- nothing was tagged"; }
+    ledger packages-rehearse "$PACKAGES" "done" "$id"
+    echo "  $PACKAGES: publish.yml rehearsal run $id green ($runs)"
 }
 
 # ------------------------------------------------------------------ tag --
@@ -469,15 +665,141 @@ tags() {
     done
 }
 
+# ------------------------------------------------------------- packages --
+# repo_live_once <V> <dir>: one look at the live repository; 0 when it serves
+# release V with indexes signed by the index subkey, else the reason on stdout.
+repo_live_once() {
+    local v=$1 d="$2/try" idx pfpr row digest size primary
+    idx="$(package_keys S_IDX_FPR)"; pfpr="$(package_keys PACKAGE_FPR)"
+    [ -n "$idx" ] && [ -n "$pfpr" ] || { echo "$PACKAGE_KEYS names no PACKAGE_FPR or S_IDX_FPR"; return 1; }
+    rm -rf -- "$d"; mkdir -m 700 "$d" || { echo "cannot make $d"; return 1; }
+    fetch() { curl -fsSL --max-time 60 -o "$d/$2" "$PACKAGES_URL/$1" 2>/dev/null || { echo "$PACKAGES_URL/$1 does not load"; return 1; }; }
+    # The first VALIDSIG field is the key that signed: exactly S_IDX_FPR, of PACKAGE_FPR.
+    signed_by_idx() {
+        awk -v k="$idx" -v p="$pfpr" '$1=="[GNUPG:]" && $2=="VALIDSIG" { n++; if (n == 1 && $3 == k && $NF == p) ok = 1 } END { exit !ok }' "$1"
+    }
+    # digest and size, without sha256sum (not on every macOS)
+    hashsize() { python3 -c 'import hashlib, sys; b = open(sys.argv[1], "rb").read(); print(hashlib.sha256(b).hexdigest(), len(b))' "$1"; }
+    signer() { awk '$2=="VALIDSIG" { print "signed by " $3 " of " $NF; f = 1; exit } END { if (!f) print "no valid signature" }' "$1"; }
+    fetch KEY.asc KEY.asc || return 1
+    # gpgv reads a keyring file by absolute path; dearmored in a home of its own.
+    GNUPGHOME="$d" gpg --batch --dearmor --output "$d/key.gpg" "$d/KEY.asc" >/dev/null 2>&1 \
+        || { echo "the live KEY.asc does not dearmor"; return 1; }
+
+    fetch deb/dists/trixie/InRelease InRelease || return 1
+    # The text through stdout: gpgv 2.5.22 writes no --output FILE.
+    GNUPGHOME="$d" gpgv --status-fd 3 --keyring "$d/key.gpg" --output - "$d/InRelease" \
+        3>"$d/in.status" >"$d/Release" 2>/dev/null
+    signed_by_idx "$d/in.status" \
+        || { echo "deb/dists/trixie/InRelease is not signed by the index subkey $idx of $pfpr ($(signer "$d/in.status"))"; return 1; }
+    grep -qx 'Codename: trixie' "$d/Release" || { echo "deb/dists/trixie/InRelease is not trixie's"; return 1; }
+    # By-hash: under the same name the CDN may still hand out the previous Packages.xz.
+    row="$(awk '/^SHA256:/ { s = 1; next } /^[^ ]/ { s = 0 } s && $3 == "main/binary-amd64/Packages.xz" { print $1, $2; exit }' "$d/Release")"
+    read -r digest size <<<"$row"
+    [[ "$digest" =~ ^[0-9a-f]{64}$ ]] && [[ "$size" =~ ^[0-9]+$ ]] \
+        || { echo "deb/dists/trixie/InRelease names no main/binary-amd64/Packages.xz"; return 1; }
+    fetch "deb/dists/trixie/main/binary-amd64/by-hash/SHA256/$digest" Packages.xz || return 1
+    [ "$(hashsize "$d/Packages.xz")" = "$digest $size" ] \
+        || { echo "the by-hash Packages.xz is not the $digest InRelease names"; return 1; }
+    xz -dc "$d/Packages.xz" >"$d/Packages" 2>/dev/null || { echo "the trixie Packages.xz does not decompress"; return 1; }
+    awk -v want="$v-1~deb13" 'BEGIN { RS = "" } ("\n" $0 "\n") ~ /\nPackage: librecelik\n/ && index("\n" $0 "\n", "\nVersion: " want "\n") { f = 1 } END { exit !f }' "$d/Packages" \
+        || { echo "trixie Packages.xz carries no librecelik $v-1~deb13 (it has: $(awk 'BEGIN { RS = "" } ("\n" $0 "\n") ~ /\nPackage: librecelik\n/' "$d/Packages" | sed -n 's/^Version: //p' | paste -sd, -))"; return 1; }
+
+    fetch rpm/fedora44/repodata/repomd.xml repomd.xml || return 1
+    fetch rpm/fedora44/repodata/repomd.xml.asc repomd.xml.asc || return 1
+    GNUPGHOME="$d" gpgv --status-fd 3 --keyring "$d/key.gpg" "$d/repomd.xml.asc" "$d/repomd.xml" \
+        3>"$d/md.status" >/dev/null 2>&1
+    signed_by_idx "$d/md.status" \
+        || { echo "rpm/fedora44/repodata/repomd.xml is not signed by the index subkey $idx ($(signer "$d/md.status"))"; return 1; }
+    row="$(python3 -c '
+import sys, xml.etree.ElementTree as ET
+ns = "{http://linux.duke.edu/metadata/repo}"
+for e in ET.parse(sys.argv[1]).getroot().iter(ns + "data"):
+    if e.get("type") == "primary":
+        c, l = e.find(ns + "checksum"), e.find(ns + "location")
+        if c is not None and l is not None and c.get("type") == "sha256":
+            print(c.text.strip(), l.get("href"))
+        break
+' "$d/repomd.xml" 2>/dev/null)"
+    read -r digest primary <<<"$row"
+    [[ "$digest" =~ ^[0-9a-f]{64}$ ]] && [[ "$primary" == repodata/*.zst ]] && [[ "$primary" != *..* ]] \
+        || { echo "rpm/fedora44 repomd.xml names no sha256 zstd primary"; return 1; }
+    fetch "rpm/fedora44/$primary" primary.zst || return 1
+    [ "$(hashsize "$d/primary.zst" | cut -d' ' -f1)" = "$digest" ] \
+        || { echo "rpm/fedora44/$primary is not the $digest repomd.xml names"; return 1; }
+    zstd -qdc "$d/primary.zst" >"$d/primary.xml" 2>/dev/null || { echo "the fedora44 primary does not decompress"; return 1; }
+    python3 -c '
+import sys, xml.etree.ElementTree as ET
+ns = "{http://linux.duke.edu/metadata/common}"
+sys.exit(0 if any(p.findtext(ns + "name") == "librecelik" and (p.find(ns + "version") is not None)
+                  and p.find(ns + "version").get("ver") == sys.argv[2]
+                  for p in ET.parse(sys.argv[1]).getroot().iter(ns + "package")) else 1)
+' "$d/primary.xml" "$v" 2>/dev/null || { echo "the fedora44 primary carries no librecelik $v"; return 1; }
+}
+
+# verify_repo_live <V>: the live repository serves V, retried while the CDN
+# (max-age=600 per object) may still hand out the previous generation.
+verify_repo_live() {
+    local v=$1 tmp tries i why=""
+    tmp="$(mktemp -d "/var/tmp/release-train-live.XXXXXX")" || die "cannot make a scratch directory under /var/tmp"
+    tries=$(( LIVE_WAIT / (LIVE_POLL > 0 ? LIVE_POLL : 1) ))
+    for ((i = 0; i <= tries; i++)); do
+        if why="$(repo_live_once "$v" "$tmp")"; then
+            drop_scratch "$tmp"
+            ledger packages-live "$PACKAGES" "done" "$PACKAGES_URL $v"
+            echo "  $PACKAGES_URL serves librecelik $v (trixie, fedora44), its indexes signed by the index subkey"
+            return 0
+        fi
+        echo "  not live yet: $why"
+        [ "$i" -lt "$tries" ] && sleep "$LIVE_POLL"
+    done
+    drop_scratch "$tmp"
+    die "$PACKAGES_URL does not serve $v after ${LIVE_WAIT}s: $why"
+}
+
+packages_publish() {
+    say "5 packages"
+    local sha before id
+    if done_in_ledger packages-publish "$PACKAGES"; then
+        echo "  $PACKAGES: published earlier (run $(ledger_detail packages-publish "$PACKAGES"))"
+    else
+        # Not the frozen SHA: the tags are out, and a fix to a red publish lands on main.
+        sha="$(remote_main "$PACKAGES")"
+        [ -n "$sha" ] || die "$PACKAGES: cannot read origin main"
+        ci_green "$PACKAGES" "$sha" || die "$PACKAGES: ci.yml is not green on ${sha:0:12} -- nothing published"
+        ask "Publish the package repository for $V (publish.yml mode=publish on $PACKAGES main ${sha:0:12})?"
+        before="$(run_ids "$PACKAGES" publish.yml "$sha" workflow_dispatch | tr '\n' ' ')"
+        gh workflow run publish.yml -R "$(slug "$PACKAGES")" --ref main -f mode=publish >/dev/null 2>&1 \
+            || die "$PACKAGES: could not dispatch publish.yml mode=publish"
+        id="$(wait_new_run "$PACKAGES" publish.yml "$sha" workflow_dispatch "$before")" \
+            || die "$PACKAGES: the publish.yml run on ${sha:0:12} never appeared"
+        watch_run "$PACKAGES" "$id" \
+            || { ledger packages-publish "$PACKAGES" red "$id sha=$sha"; die "$PACKAGES: publish.yml run $id on ${sha:0:12} is red"; }
+        ledger packages-publish "$PACKAGES" "done" "$id sha=$sha"
+        echo "  $PACKAGES: publish.yml run $id green on ${sha:0:12}"
+    fi
+    verify_repo_live "$V"
+}
+
 # ----------------------------------------------------------------- site --
 site() {
-    say "5 site"
+    say "6 site"
     local s="$ROOT/$SITE" head rm url page
     if ! done_in_ledger site "$SITE"; then
         ( cd "$s" && python3 tools/gen-artifacts-data.py --repos-root "$ROOT" --ref "$V" ) \
             || die "gen-artifacts-data --ref $V failed"
-        ( cd "$s" && python3 tools/check_download_claims.py content data/artifacts.json --repos-root "$ROOT" --ref "$V" ) \
-            || die "the download pages do not match release $V"
+        # The package-signing fingerprints are judged against keys/ at the ci
+        # revision the site's deploy.yml pins -- what its own deploy job reads --
+        # never against this clone's HEAD.
+        local pin kd
+        pin="$(ci_pin "$s/.github/workflows/deploy.yml")" || die "$SITE: no single LibreSCRS/ci pin in .github/workflows/deploy.yml"
+        kd="$(mktemp -d "${TMPDIR:-/var/tmp}/release-train-keys.XXXXXX")" || die "cannot make a directory for the site's ci keys"
+        git -C "$CI_CLONE" archive "$pin" keys 2>/dev/null | tar -x -C "$kd" 2>/dev/null \
+            || { rm -rf -- "$kd"; die "$SITE: LibreSCRS/ci ${pin:0:12} (its deploy.yml pin) has no keys/ in this clone -- fetch ci, or move the pin"; }
+        ( cd "$s" && python3 tools/check_download_claims.py content data/artifacts.json --repos-root "$ROOT" --ref "$V" \
+                --packages "$ROOT/$PACKAGES" --keys "$kd/keys" ) \
+            || { rm -rf -- "$kd"; die "the download pages do not match release $V"; }
+        rm -rf -- "$kd"
         if [ -n "$(git -C "$s" status --porcelain)" ]; then
             { git -C "$s" add -A data content && git -C "$s" commit -q -m "Downloads: release $V"; } \
                 || die "could not commit the site data"
@@ -489,13 +811,28 @@ site() {
             git -C "$s" diff --stat "$rm" HEAD | sed 's/^/    /'
             ask "Push the site commit above to main (publishes the download pages for $V)?"
             git -C "$s" push -q origin HEAD:refs/heads/main || die "site push failed"
+        fi
+        # Also on a resume after the push: the deploy of the train's own commit.
+        if [ "$head" != "$(ledger_detail freeze "$SITE")" ]; then
             wait_ci "$SITE" "$head" || die "the site deploy is red"
         fi
         ledger site "$SITE" "done" "$head"
     fi
+    # Pages serves HTML with max-age=600: the old page may outlive the deploy.
+    local tries i why
+    tries=$(( PAGES_WAIT / (PAGES_POLL > 0 ? PAGES_POLL : 1) ))
     for url in "$SITE_URL_EN" "$SITE_URL_SR"; do
-        page="$(curl -fsSL "$url" 2>/dev/null)" || die "$url does not load"
-        printf '%s' "$page" | grep -qF -- "$V" || die "$url does not name $V yet"
+        for ((i = 0; i <= tries; i++)); do
+            if page="$(curl -fsSL "$url" 2>/dev/null)"; then
+                printf '%s' "$page" | grep -qF -- "$V" && break
+                why="$url does not name $V yet"
+            else
+                why="$url does not load"
+            fi
+            echo "  not yet: $why"
+            [ "$i" -lt "$tries" ] && sleep "$PAGES_POLL"
+        done
+        [ "$i" -le "$tries" ] || die "$why (after ${PAGES_WAIT}s)"
         echo "  $url names $V"
     done
     ledger pages "$SITE" "done" "$SITE_URL_EN $SITE_URL_SR"
@@ -506,15 +843,17 @@ preflight
 if [ "$REHEARSE_ONLY" = 0 ]; then lock; fi
 freeze
 rehearse
+rehearse_packages
 if [ "$REHEARSE_ONLY" = 1 ]; then
     ledger train "$V" "done" "rehearse-only"
     say "rehearse-only: every rehearsal green on the frozen mains; nothing was pushed"
     exit 0
 fi
 tags
+packages_publish
 site
 ledger train "$V" "done" "released"
-say "6 ledger"
+say "7 ledger"
 cat "$LEDGER"
 echo
-echo "release-train: $V released in ${#CODE[@]} repositories and on the site"
+echo "release-train: $V released in ${#CODE[@]} repositories, the package repository and on the site"

@@ -45,7 +45,9 @@
 # touches a submodule. Exit codes: 0 green, 1 a finding, 2 cannot judge.
 set -uo pipefail
 
-REPOS=(LibreMiddleware LibreAgent LibreLinux LibreDarwin LibreCelik LibreKDE LibreMac)
+# packages publishes the others' releases and builds none of them from source:
+# known (so `check --root` judges it), never a consumer, so it carries no lock.
+REPOS=(LibreMiddleware LibreAgent LibreLinux LibreDarwin LibreCelik LibreKDE LibreMac packages)
 declare -A EXPECT=(
     [LibreAgent]="LibreMiddleware"
     [LibreLinux]="LibreMiddleware LibreAgent"
@@ -465,10 +467,12 @@ cmd_check() {
     if [ -n "$OPT_ROOT" ]; then
         consumer_name "$OPT_ROOT"; c=$REPLY
         if [ -z "${EXPECT[$c]:-}" ]; then
-            # The graph's root builds nothing of ours from source, so a lock
-            # there names a dependency the graph does not have.
+            # The graph's root and the package publisher build nothing of ours
+            # from source, so a lock there names a dependency they do not have.
+            local role="is the root of the dependency graph"
+            [ "$c" != packages ] || role="publishes the released packages"
             if [ -f "$OPT_ROOT/deps.lock" ]; then
-                red "$c is the root of the dependency graph and builds no LibreSCRS repository from source, yet $OPT_ROOT/deps.lock exists"
+                red "$c $role and builds no LibreSCRS repository from source, yet $OPT_ROOT/deps.lock exists"
             else
                 ok "$c depends on no LibreSCRS repository (root of the graph): nothing to lock"
             fi
