@@ -24,14 +24,21 @@
 # prints a syntax error and exits non-zero, which reads as a failing gate
 # rather than a mis-run one. An extension with no interpreter is exit 2.
 #
+# Two kinds, by file name. `*.selftest.*` (default) is quick and runs on every
+# platform's leg. `*.dockertest.*` (--kind docker) runs distribution
+# containers for up to an hour each, so it runs in jobs of its own; --only
+# <file name> picks one of them, one CI leg per file. The trailer rule below
+# holds for both kinds.
+#
 # Usage:
-#   run-selftests.sh [--root <checkout>]
+#   run-selftests.sh [--root <checkout>] [--kind default|docker] [--only <file name>]
 #
 # Exit codes -- a consumer writes the condition as `rc = 0`, never "not 1":
 #
 #   0  every self-test passed and proved a red case
 #   1  one of them failed, or ran no case, or proved no red case
-#   2  cannot measure: no root, no self-tests found, an interpreter is
+#   2  cannot measure: bad usage, no root, no self-tests found, --only naming
+#      none of the kind, nothing judged on this platform, an interpreter is
 #      missing, an unknown extension, or a self-test itself said it could not
 #      judge
 set -uo pipefail
@@ -42,13 +49,28 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
 fi
 
 root=""
+kind=default
+only=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --root) [ "$#" -ge 2 ] || { echo "FATAL: --root needs a directory" >&2; exit 2; }
                 root="$2"; shift 2 ;;
-        *) echo "FATAL: usage: $(basename -- "$0") [--root <checkout>]" >&2; exit 2 ;;
+        --kind) [ "$#" -ge 2 ] || { echo "FATAL: --kind needs default or docker" >&2; exit 2; }
+                kind="$2"; shift 2 ;;
+        --only) [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "FATAL: --only needs a file name" >&2; exit 2; }
+                only="$2"; shift 2 ;;
+        *) echo "FATAL: usage: $(basename -- "$0") [--root <checkout>] [--kind default|docker] [--only <file name>]" >&2
+           exit 2 ;;
     esac
 done
+case "$kind" in
+    default) want='selftest' other='dockertest' ;;
+    docker) want='dockertest' other='selftest' ;;
+    *) echo "FATAL: --kind '$kind' is neither default nor docker" >&2; exit 2 ;;
+esac
+case "$only" in
+    */*) echo "FATAL: --only takes a file name, not a path: $only" >&2; exit 2 ;;
+esac
 root="${root:-${REPO_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}}"
 repo="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null || true)"
 [ -n "$repo" ] || { echo "FATAL: $root is not a git checkout -- cannot measure" >&2; exit 2; }
@@ -58,12 +80,27 @@ cd "$repo" || { echo "FATAL: cannot enter $repo" >&2; exit 2; }
 # `e2e/` and `actions/` are here because self-tests live in all of them
 # somewhere in this project, and a pathspec that differed per repository is how
 # four of them once stopped being counted.
-mapfile -t tests < <(git ls-files -- \
-    'ci/*' 'tools/*' 'packaging/*' 'scripts/*' 'Scripts/*' 'e2e/*' 'actions/*' \
-    | grep '\.selftest\.' | sort)
+mapfile -t scanned < <(git ls-files -- \
+    'ci/*' 'tools/*' 'packaging/*' 'scripts/*' 'Scripts/*' 'e2e/*' 'actions/*' | sort)
+tests=()
+for t in "${scanned[@]}"; do
+    case "${t##*/}" in
+        *".$want."*) [ -z "$only" ] || [ "${t##*/}" = "$only" ] && tests+=("$t") ;;
+    esac
+done
 
 if [ "${#tests[@]}" -eq 0 ]; then
-    echo "FATAL: no self-tests found under the scanned paths -- wrong root?" >&2
+    if [ -z "$only" ]; then
+        echo "FATAL: no ${want}s found under the scanned paths -- wrong root?" >&2
+        exit 2
+    fi
+    # Name the file of the other kind, so a leg pointed at a quick self-test
+    # says why it ran nothing.
+    hint=""
+    for t in "${scanned[@]}"; do
+        [ "${t##*/}" = "$only" ] && [[ "$only" == *".$other."* ]] && hint=" ($t is a $other)"
+    done
+    echo "FATAL: no $want is named $only$hint -- cannot measure" >&2
     exit 2
 fi
 
@@ -72,8 +109,8 @@ fi
 declare -A interp=()
 for t in "${tests[@]}"; do
     case "$t" in
-        *.selftest.py) interp[$t]="python3" ;;
-        *.selftest.sh) interp[$t]="bash" ;;
+        *.py) interp[$t]="python3" ;;
+        *.sh) interp[$t]="bash" ;;
         *) echo "FATAL: $t: no interpreter for this extension" >&2; exit 2 ;;
     esac
 done
@@ -153,10 +190,16 @@ for t in "${tests[@]}"; do
     printf 'ok    %-58s %s cases, %s red-proved\n' "$t" "$n" "$r"
 done
 
-printf 'run-selftests: %s selftests, %s cases, %s red-proved%s\n' \
-    "$(( ${#tests[@]} - skipped ))" "$sum_cases" "$sum_red" \
+printf 'run-selftests: %s %ss, %s cases, %s red-proved%s\n' \
+    "$(( ${#tests[@]} - skipped ))" "$want" "$sum_cases" "$sum_red" \
     "$([ "$skipped" = 0 ] || printf ', %s not for %s' "$skipped" "$platform")"
 
 [ "$failed" = 0 ] || exit 1
 [ "$unjudged" = 0 ] || exit 2
+# Every selected self-test skipped for this platform judged nothing: a leg
+# that ran none of its tests is not green.
+if [ "${#tests[@]}" -eq "$skipped" ]; then
+    echo "FATAL: every selected $want is declared for another platform -- nothing was judged" >&2
+    exit 2
+fi
 exit 0

@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# The LibreKDE metapackage. It owns no file: it exists so that one name
+# installs the five LibreKDE packages, each pinned to exactly its own build.
+rpmlint * no-binary * -- metapackage by design: it owns no file and only requires the five LibreKDE packages [session 2026-10-16]

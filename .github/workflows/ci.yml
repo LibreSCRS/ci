@@ -7,15 +7,18 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-  # The tag-path fixtures read releases other people publish; a week is how
-  # long a change there may go unseen.
+  # The tag-path fixtures read releases other people publish, and the package
+  # repository's signatures expire; a week is how long either may go unseen.
   schedule:
     - cron: '41 3 * * 2'
 
 permissions: {}
 
+# The event is part of the group: a push must not cancel the weekly run (whose
+# repo-watch would miss its week without a red run), nor the weekly run a
+# push's hour-long container legs.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -33,12 +36,83 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: GNU userland the gates assume (macOS ships bash 3.2 and bsdtar)
         if: runner.os == 'macOS'
+        # gnupg, xz and zstd: release-train's self-test reads a signed package
+        # repository with gpgv and its xz- and zstd-compressed indexes.
         run: |
-          brew install bash gnu-tar
+          brew install bash gnu-tar gnupg xz zstd
           echo "$(brew --prefix gnu-tar)/libexec/gnubin" >> "$GITHUB_PATH"
           python3 -m pip install --break-system-packages pyyaml
       - name: Run every self-test
         run: ./scripts/run-selftests.sh
+
+  dockertests:
+    # The self-tests that run distribution containers, one leg per file: the
+    # two probes take about an hour each and run side by side. They need the
+    # network, because the packages they install inside the images come from
+    # the distributions' mirrors. Each limit is the local wall time plus half.
+    name: Container self-test (${{ matrix.test }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every scripts/*.dockertest.* needs a leg here; `run-selftests.sh
+        # --kind docker` runs them all and lists the set.
+        include:
+          - test: pkg-sign.dockertest.sh
+            minutes: 8
+          - test: pkg-repo.dockertest.py
+            minutes: 29
+          - test: pkg-repo-probe.dockertest.sh
+            minutes: 85
+          - test: pkg-repo-probe-upgrade.dockertest.sh
+            minutes: 125
+          - test: aur-publish.dockertest.sh
+            minutes: 15
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.minutes }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run ${{ matrix.test }}
+        env:
+          TEST: ${{ matrix.test }}
+        run: ./scripts/run-selftests.sh --kind docker --only "$TEST"
+
+  repo-watch:
+    # The live package repository between publishes: every InRelease must
+    # verify and stay valid for more than 14 days, so a weekly re-sign that
+    # stopped is red while apt still accepts the repository. It runs here
+    # because this repository is active: GitHub disables a schedule after 60
+    # days without activity, and the packages repository's own may stop
+    # unseen.
+    name: Package repository stays signed
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Watch the live InRelease
+        env:
+          EVENT: ${{ github.event_name }}
+          # A 404 is judged by whether any code repository has released:
+          # their public releases, read through gh.
+          GH_TOKEN: ${{ github.token }}
+        # Until the package key exists there is nothing to watch: the weekly
+        # run stays green, and a run someone asked for cannot judge.
+        run: |
+          if [ ! -f keys/package-signing.env ]; then
+            echo "no package key yet"
+            [ "$EVENT" = schedule ] && exit 0
+            exit 2
+          fi
+          python3 scripts/pkg-repo.py watch --url https://librescrs.github.io/packages \
+            --keyset package-signing --min-days 14
 
   lint:
     name: actionlint + shellcheck
