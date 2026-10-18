@@ -37,8 +37,16 @@ from `images.lock`, isolated `SEQUOIA_HOME`): `sq key generate --own-key
 --expiration never --without-password`, and the certificate exported with
 `sq cert import` + `sq cert export --cert <PACKAGE_FPR>`.
 
-## `package-signing.env`
+## `package-signing.{asc,env}` -- the package-signing key
 
-Lands together with the real package-signing key: its fingerprints, in the
-same four-line format. Its certificate is published; its secret subkeys live
-only in the CI environments that sign, never here.
+The certificate of "LibreSCRS Package Signing", certified by the release
+key `6B05889AC9A6A7188DF639B06F27A989C2031D16`, and its fingerprints in the
+same four-line format. This is the one home of the certificate: the keyring
+packages, the published `KEY.asc` and every signature check take it from
+here.
+
+The `.asc` is exported with `sq cert export`, never with `gpg --export`:
+gpg rewrites the subkey binding signatures on export, and rpm 6 and `sqv`
+then refuse everything signed before. The secret subkeys `S_RPM_FPR` and
+`S_IDX_FPR` live only in the CI environments that sign; the primary and
+`S_REZ_FPR` stay offline.
