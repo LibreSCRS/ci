@@ -205,7 +205,14 @@ forge_reason() {
         dnf:forge-b) SEQ=('^The key was successfully imported\.'
                           'repomd\.xml GPG signature verification error: Signing key not found') ;;
         dnf:forge-c) SEQ=('OpenPGP check for package "librecelik-[^"]+" .* has failed: The package is not signed\.') ;;
-        zypper:forge-a) SEQ=("Digest verification failed for file 'librecelik-[^']+\.rpm'") ;;
+        # libzypp words it two ways, by how it fetched the package: against
+        # the index's digest, or rpm's own check of the payload digest
+        zypper:forge-a) if grep -q -E "Digest verification failed for file 'librecelik-" /tmp/p1.log; then
+                            SEQ=("Digest verification failed for file 'librecelik-[^']+\.rpm'")
+                        else
+                            SEQ=('^librecelik-[^ ]+\.rpm:$' '^ +Payload SHA256 digest: BAD '
+                                 'librecelik-[^ ]+ \(LibreSCRS\): Signature verification failed \[2-Signature does not verify\]')
+                        fi ;;
         zypper:forge-b) [[ "$k" =~ ^[0-9A-F]{40}$ ]] || return 1
                         SEQ=("File 'repomd\.xml' from repository 'LibreSCRS' is signed with an unknown key '${k:24}'"
                              'Signature verification failed for repomd\.xml') ;;
