@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# The development RPM of LibreMiddleware.
+rpmlint opensuse* no-library-dependency-for /usr/lib64/libLibreSCRS_*.so.5 -- false positive of rpmlint 2.x: Lint.validate_files resets every check after each package and runs after_checks only with the last one, so LibraryDependencyCheck sees no runtime package when -devel sorts last (it does once librescrs-pkcs11-direct is gone); -devel Requires the runtime package that ships every soname [session 2026-10-22]
