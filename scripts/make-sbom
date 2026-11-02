@@ -6,7 +6,8 @@
 # statically linked OpenSSL, so this file is the only place either appears.
 #
 # Usage: make-sbom --out FILE [--root DIR] [--repo NAME]
-#                  [--static-dep NAME=CHECKOUT]... [--require COMPONENT]...
+#                  [--static-dep NAME=CHECKOUT]... [--dynamic-dep NAME=CHECKOUT]...
+#                  [--require COMPONENT]...
 #
 # Every version and commit is read from a tree, never typed here. What a tree
 # bundles is found by these probes, each allowed to come up empty:
@@ -24,7 +25,15 @@
 # --static-dep NAME=CHECKOUT: an upstream linked statically, e.g. LibreAgent
 #   into the agent. CHECKOUT must be at the commit the root's deps.lock locks
 #   NAME at (a bill read from any other tree names code the release did not
-#   build); NAME becomes a component and CHECKOUT is probed like the root.
+#   build); NAME becomes a component and CHECKOUT is probed like the root. The
+#   lock is read by `bump-deps resolve`, the one reader of its format: a lock
+#   with two rows for one name, or a malformed row, is refused there instead
+#   of one reader taking the first row and another refusing it.
+# --dynamic-dep NAME=CHECKOUT: the same, for an upstream whose own shared
+#   libraries ship beside the binary (e.g. LibreMiddleware's dylibs in the
+#   macOS bundle). Only the component's description differs: the bill must not
+#   say "linked statically" about a library a reader can find as its own file.
+#   One NAME given twice, in either option, is a usage error.
 # --require COMPONENT: the bill must name it. Because every probe tolerates
 #   absence, a tree that moved or renamed a pin looks like a tree that bundles
 #   nothing; a required component turns that into a refusal. An empty bill is
@@ -34,12 +43,13 @@
 # the working directory. Name: --repo, else GITHUB_REPOSITORY's repository part,
 # else the root's directory name.
 #
-# Exit codes: 0 written; 1 refused (empty, a required component missing, a
-# static dependency not at its lock, two OpenSSL trees); 2 usage, no root, no
-# VERSION, no python3.
+# Exit codes: 0 written; 1 refused (empty, a required component missing, an
+# upstream dependency not at its lock or the lock unreadable, two OpenSSL
+# trees); 2 usage, no root, no VERSION, no python3, no bump-deps beside this
+# script.
 set -euo pipefail
 
-usage() { echo "usage: make-sbom --out FILE [--root DIR] [--repo NAME] [--static-dep NAME=CHECKOUT]... [--require COMPONENT]..." >&2; exit 2; }
+usage() { echo "usage: make-sbom --out FILE [--root DIR] [--repo NAME] [--static-dep NAME=CHECKOUT]... [--dynamic-dep NAME=CHECKOUT]... [--require COMPONENT]..." >&2; exit 2; }
 OUT="" ROOT="" REPO=""
 DEPS=() REQUIRE=()
 while [ "$#" -gt 0 ]; do
@@ -48,13 +58,16 @@ while [ "$#" -gt 0 ]; do
     --out) OUT="$2" ;;
     --root) ROOT="$2" ;;
     --repo) REPO="$2" ;;
-    --static-dep) case "$2" in ?*=?*) DEPS+=("$2") ;; *) usage ;; esac ;;
+    --static-dep) case "$2" in ?*=?*) DEPS+=("linked statically=$2") ;; *) usage ;; esac ;;
+    --dynamic-dep) case "$2" in ?*=?*) DEPS+=("shipped as dynamic libraries=$2") ;; *) usage ;; esac ;;
     --require) REQUIRE+=("$2") ;;
     *) usage ;;
   esac
   shift 2
 done
 [ -n "$OUT" ] || usage
+dup="$(for dep in ${DEPS[@]+"${DEPS[@]}"}; do d="${dep#*=}"; printf '%s\n' "${d%%=*}"; done | sort | uniq -d | head -n1)"
+[ -z "$dup" ] || { echo "make-sbom: $dup is named twice by --static-dep/--dynamic-dep -- a bill cannot say both how it ships" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "make-sbom: python3 is not on PATH" >&2; exit 2; }
 [ -n "$ROOT" ] || ROOT="${REPO_ROOT:-${GITHUB_WORKSPACE:-}}"
 [ -n "$ROOT" ] || ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -111,14 +124,27 @@ probe() {  # probe <tree> <description>
 }
 
 probe "$ROOT" ""
-for dep in "${DEPS[@]}"; do
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+for dep in ${DEPS[@]+"${DEPS[@]}"}; do
+  how="${dep%%=*}" dep="${dep#*=}"
   name="${dep%%=*}" co="${dep#*=}"
-  lock="$(awk -v n="$name" '$1 == n {print $3; exit}' "$ROOT/deps.lock" 2>/dev/null || true)"
+  [ -f "$here/bump-deps" ] || { echo "make-sbom: no bump-deps beside this script -- deps.lock cannot be read" >&2; exit 2; }
+  # The lock belongs to the root's repository (its directory name, else
+  # GITHUB_REPOSITORY), not to the bill's --repo: a bill may describe a
+  # product built around another repository's tree.
+  src=0; resolved="$(bash "$here/bump-deps" resolve --root "$ROOT" --names "$name" 2>&1)" || src=$?
+  if [ "$src" -ne 0 ]; then
+    printf '%s\n' "$resolved" | sed 's/^/  | /' >&2
+    echo "make-sbom: $ROOT/deps.lock does not lock $name (bump-deps resolve rc=$src)" >&2
+    [ "$src" -eq 2 ] && exit 2
+    exit 1
+  fi
+  lname="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
+  lock="$(printf '%s\n' "$resolved" | sed -n "s/^$lname-sha=//p")"
   [ -n "$lock" ] || { echo "make-sbom: $ROOT/deps.lock has no $name row" >&2; exit 1; }
   head="$(git -C "$co" rev-parse HEAD 2>/dev/null || true)"
   [ "$head" = "$lock" ] || { echo "make-sbom: $co is at '${head:-not a git checkout}', deps.lock locks $name at $lock" >&2; exit 1; }
-  lname="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
-  row "$lname" "git-$lock" "pkg:github/LibreSCRS/$name@$lock" LGPL-2.1-or-later "linked statically"
+  row "$lname" "git-$lock" "pkg:github/LibreSCRS/$name@$lock" LGPL-2.1-or-later "$how"
   probe "$co" "bundled in $name"
 done
 

@@ -16,15 +16,19 @@
 # family cannot be judged.
 #
 # --hook runs the consumer's own installed-state assertions LAST, inside the
-# same clean container (pkg-verify-inside.sh S10), instead of in a container
+# same clean container (pkg-verify-inside.sh S9), instead of in a container
 # of their own. The hook sees <DIR>/<REPO>/<family>/ at /pkg and every other
 # <DIR>/<Repository>/<family>/ at /pkg-<Repository> -- the layout pkg-build
-# leaves -- plus FAMILY and PKG_MANAGER. A hook with no <DIR>/<REPO>/<family>
+# leaves -- plus FAMILY (deb|rpm|arch) and PKG_MANAGER. A hook with no <DIR>/<REPO>/<family>
 # to show it cannot be judged.
 #
 # Each DIR holds .deb / .rpm files (any names: build names or release asset
-# names). --report keeps the raw logs (default: a temporary directory that is
-# removed); --accepted defaults to this repository's lint-accepted/.
+# names), or for the pseudo-slug `arch` the .pkg.tar.zst files pkg-build
+# leaves; those are installed with pacman in the archlinux tool image, and the
+# lint judgement is skipped by name with its reason printed (lintian and
+# rpmlint read deb/rpm only). --report keeps the raw logs (default: a
+# temporary directory that is removed); --accepted defaults to this
+# repository's lint-accepted/.
 # Environment: PKG_DOCKER, PKG_DOCKER_NETWORK as pkg-gate.sh.
 #
 # Exit codes: 0 the stack is green, 1 a check or the lint judgement failed,
@@ -54,6 +58,7 @@ NET=()
 image="$("$here/pkg-images" get "$slug")" || exit 2
 manager="$("$here/pkg-images" manager "$slug")" || exit 2
 family="$("$here/pkg-images" family "$slug")" || exit 2
+ext="$("$here/pkg-images" ext "$slug")" || exit 2
 
 mounts=()
 i=0
@@ -79,8 +84,8 @@ if [ -n "$hook" ]; then
     done
     [ "$ownpkg" = 1 ] || { echo "pkg-verify: no <dir>/$name/$family under ${dirs[*]} for the hook -- cannot judge" >&2; exit 2; }
 fi
-n="$(find "${dirs[@]}" -type f -name "*.$family" | wc -l)"
-[ "$n" -gt 0 ] || { echo "pkg-verify: no .$family package under ${dirs[*]} -- cannot judge" >&2; exit 2; }
+n="$(find "${dirs[@]}" -type f -name "*.$ext" | wc -l)"
+[ "$n" -gt 0 ] || { echo "pkg-verify: no .$ext package under ${dirs[*]} -- cannot judge" >&2; exit 2; }
 
 own=0
 if [ -z "$report" ]; then report="$(mktemp -d "${TMPDIR:-/var/tmp}/pkg-verify.XXXXXX")" || exit 2; own=1; fi
@@ -94,8 +99,8 @@ if [ "${#lintdirs[@]}" -gt 0 ]; then
     for d in "${lintdirs[@]}"; do
         [ -d "$d" ] || { echo "pkg-verify: --lint $d is not a directory -- cannot judge" >&2; exit 2; }
     done
-    find "${lintdirs[@]}" -type f -name "*.$family" -printf '%f\n' | sort -u >"$report/lint-files.txt"
-    [ -s "$report/lint-files.txt" ] || { echo "pkg-verify: no .$family package under --lint ${lintdirs[*]} -- cannot judge" >&2; exit 2; }
+    find "${lintdirs[@]}" -type f -name "*.$ext" -printf '%f\n' | sort -u >"$report/lint-files.txt"
+    [ -s "$report/lint-files.txt" ] || { echo "pkg-verify: no .$ext package under --lint ${lintdirs[*]} -- cannot judge" >&2; exit 2; }
     echo "   lint scope: $(wc -l <"$report/lint-files.txt") package(s) under ${lintdirs[*]}"
 fi
 echo "== pkg-verify $slug ($manager): $n package(s) from ${#dirs[@]} director(ies)"
@@ -103,12 +108,17 @@ echo "== pkg-verify $slug ($manager): $n package(s) from ${#dirs[@]} director(ie
     -e PKG_MANAGER="$manager" -e PKG_SLUG="$slug" "$image" bash /ci-scripts/pkg-verify-inside.sh
 irc=$?
 
-linted="$(paste -sd, "$report/linted.txt" 2>/dev/null)"
-largs=(--slug "$slug" --accepted "$accepted" --linted "$linted")
-[ ! -f "$report/lintian.txt" ] || largs+=(--lintian "$report/lintian.txt")
-[ ! -f "$report/rpmlint.txt" ] || largs+=(--rpmlint "$report/rpmlint.txt")
-python3 "$here/pkg-lint-accept.py" "${largs[@]}"
-lrc=$?
+if [ "$family" = arch ]; then
+    echo "pkg-verify: lint not judged on arch: lint-accepted/ holds lintian and rpmlint rows, which read deb/rpm only -- namcap's findings are printed by the build"
+    lrc=0
+else
+    linted="$(paste -sd, "$report/linted.txt" 2>/dev/null)"
+    largs=(--slug "$slug" --accepted "$accepted" --linted "$linted")
+    [ ! -f "$report/lintian.txt" ] || largs+=(--lintian "$report/lintian.txt")
+    [ ! -f "$report/rpmlint.txt" ] || largs+=(--rpmlint "$report/rpmlint.txt")
+    python3 "$here/pkg-lint-accept.py" "${largs[@]}"
+    lrc=$?
+fi
 
 echo "== pkg-verify $slug: smoke rc=$irc, lint rc=$lrc"
 [ "$irc" -eq 1 ] || [ "$lrc" -eq 1 ] && exit 1

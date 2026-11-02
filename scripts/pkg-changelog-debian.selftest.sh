@@ -71,7 +71,7 @@ mk "## 5.0.0
 - **The settings importer (settingsimport.cpp) is gone.**"
 gen; expect "a C++ file in a headline is red" 1 $?
 mk "## 5.0.0
-- **Wave 6 review findings addressed.**"
+- **Second wave of fixes landed.**"
 gen; expect "a process word in a headline is red" 1 $?
 mk "## 5.0.0
 - **\`tools/migrate-3x-to-4.0.sh\` removed.**"

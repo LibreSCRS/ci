@@ -94,6 +94,15 @@ tl tool-image archlinux; rc=$?; [ "$(cat "$work/out")" = "$ti_ref" ]; expect "to
 tl slugs; ! grep -q archlinux "$work/out"; expect "slugs never prints a tool-image" 0 $?
 tl get archlinux; expect "get does not answer for a tool-image" 2 $?
 tl tool-image nema; expect "unknown tool-image cannot be judged" 2 $?
+# the arch pseudo-slug: the Arch recipes build in the archlinux tool image
+tl get arch; rc=$?; [ "$(cat "$work/out")" = "$ti_ref" ]; expect "the arch pseudo-slug builds in the archlinux tool image" "0 0" "$rc $?"
+tl manager arch; rc=$?; [ "$(cat "$work/out")" = pacman ]; expect "... with pacman" "0 0" "$rc $?"
+tl family arch; rc=$?; [ "$(cat "$work/out")" = arch ]; expect "... and family arch" "0 0" "$rc $?"
+tl ext arch; rc=$?; [ "$(cat "$work/out")" = pkg.tar.zst ]; expect "... whose packages are .pkg.tar.zst" "0 0" "$rc $?"
+tl ext debian13; rc=$?; [ "$(cat "$work/out")" = deb ]; expect "a deb slug's packages are .deb" "0 0" "$rc $?"
+tl slugs; ! grep -qx arch "$work/out"; expect "slugs never prints the arch pseudo-slug" 0 $?
+tilock
+tl get arch; expect "the arch pseudo-slug without the archlinux tool image cannot be judged" 2 $?
 tilock "tool-image archlinux docker.io/library/archlinux:base-devel"
 tl check; expect "tool-image without a digest is red" 1 $?
 tilock "tool-image archlinux $ti_ref" "tool-image archlinux $ti_ref"

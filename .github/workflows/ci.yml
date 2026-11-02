@@ -67,6 +67,10 @@ jobs:
             minutes: 125
           - test: aur-publish.dockertest.sh
             minutes: 15
+          # Not yet measured on a runner: five containers, each with a
+          # pacman -Syu; set to the first run's wall time plus half.
+          - test: pkg-build-arch.dockertest.sh
+            minutes: 30
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ matrix.minutes }}
     permissions:

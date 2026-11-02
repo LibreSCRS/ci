@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+name: select-xcode
+description: >
+  Select the Xcode the calling repository's .xcode-version names, and that
+  Xcode's macOS SDK, for every later step of the job (DEVELOPER_DIR and SDKROOT
+  in the job environment). The Xcode is found by the version it reports, not by
+  its bundle name, and an SDK outside it is refused -- a runner image changes
+  its default Xcode on its own schedule, and xcrun left alone can pick a
+  Command Line Tools SDK that Xcode's linker cannot read. macOS runners only.
+
+inputs:
+  root:
+    description: >
+      Where the repository holding .xcode-version is checked out, relative to
+      the workspace (or absolute).
+    required: false
+    default: '.'
+
+runs:
+  using: composite
+  steps:
+    - name: Select the Xcode in .xcode-version and its SDK
+      shell: bash
+      env:
+        IN_ROOT: ${{ inputs.root }}
+      run: |
+        set -euo pipefail
+        case "$IN_ROOT" in /*) root="$IN_ROOT" ;; *) root="$GITHUB_WORKSPACE/$IN_ROOT" ;; esac
+        # /bin/bash, not the first bash on PATH: the bash 3.2 macOS ships is
+        # the one the self-test runs the script under on its macOS leg.
+        /bin/bash "$GITHUB_ACTION_PATH/../../scripts/select-xcode.sh" --root "$root"

@@ -5,7 +5,8 @@
 #
 # Usage: pkg-gate.sh --slug <slug> --art <artefact-root> [--root DIR] [--name NAME]
 #
-#   G1  a packaging recipe exists, and names the project maintainer
+#   G1  a packaging recipe exists, and names the project maintainer (the Arch
+#       recipe names its AUR maintainer, a person, so only its presence)
 #   G2  it builds, in the slug's container from images.lock, against the
 #       upstream packages already under <art>/<slug>/<Upstream>/<family>
 #   G5  the build dependency the manifest tool needs is declared, consistently
@@ -22,7 +23,10 @@
 # Upstreams: the first column of pkg-deps.sh closure over the root's deps.lock.
 #
 # Environment: PKG_DOCKER (default docker), PKG_DOCKER_NETWORK (docker run
-# --network, default unset), PKG_JOBS (build parallelism, default 2).
+# --network, default unset), PKG_DOCKER_ADD_HOST (space-separated HOST:IP, each
+# a docker run --add-host: a fixture pins github.com to loopback so a build
+# that escapes its local source fails instead of fetching the real one),
+# PKG_JOBS (build parallelism, default 2).
 #
 # Exit codes: 0 every gate passed, 1 a gate failed, 2 cannot judge (unknown
 # slug, no root, docker missing).
@@ -51,9 +55,11 @@ DOCKER="${PKG_DOCKER:-docker}"
 command -v "$DOCKER" >/dev/null 2>&1 || { echo "pkg-gate: $DOCKER is not on PATH -- cannot judge" >&2; exit 2; }
 NET=()
 [ -z "${PKG_DOCKER_NETWORK:-}" ] || NET=(--network "$PKG_DOCKER_NETWORK")
+for h in ${PKG_DOCKER_ADD_HOST:-}; do NET+=(--add-host "$h"); done
 
 IMAGE="$("$here/pkg-images" get "$SLUG")" || exit 2
 FAMILY="$("$here/pkg-images" family "$SLUG")" || exit 2
+EXT="$("$here/pkg-images" ext "$SLUG")" || exit 2
 MANAGER="$("$here/pkg-images" manager "$SLUG")" || exit 2
 
 mkdir -p "$ART" && ART="$(cd "$ART" && pwd)"
@@ -100,7 +106,10 @@ echo "   artefacts $OUT"
 
 # ── G1 ────────────────────────────────────────────────────────────────────
 spec=""
-if [ "$FAMILY" = deb ]; then
+if [ "$FAMILY" = arch ]; then
+    test -f "$ROOT/packaging/arch/PKGBUILD"
+    check "G1 Arch recipe present" $?
+elif [ "$FAMILY" = deb ]; then
     test -f "$ROOT/packaging/debian/control" -a -f "$ROOT/packaging/debian/rules"
     check "G1 debian recipe present" $?
     grep -qxF "Maintainer: $MAINTAINER" "$ROOT/packaging/debian/control"
@@ -125,7 +134,7 @@ MOUNTS=()
 while read -r up _; do
     [ -n "$up" ] || continue
     updir="$ART/$SLUG/$up/$FAMILY"
-    if ! ls "$updir"/*."$FAMILY" >/dev/null 2>&1; then
+    if ! ls "$updir"/*."$EXT" >/dev/null 2>&1; then
         note FAIL "G2 upstream packages for $up missing under $updir -- build $up first"
         fail=1; continue
     fi
@@ -151,8 +160,9 @@ epoch="$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || date +%s)"
 
 # A dependency the release tarball carries but the repository does not is
 # placed before the container starts: a build that reaches the network is not
-# a build of a package.
-if [ -x "$ROOT/packaging/ci/prepare-source.sh" ]; then
+# a build of a package. Not for the Arch recipe, which fetches its sources
+# itself exactly as an AUR user's makepkg does, from a tree that is the tag.
+if [ -x "$ROOT/packaging/ci/prepare-source.sh" ] && [ "$FAMILY" != arch ]; then
     ( cd "$SRC" && bash "$ROOT/packaging/ci/prepare-source.sh" ) >"$LOG/prepare-$NAME-$SLUG.txt" 2>&1
     check "G2b source prepared (vendored fetch-time dependencies)" $?
 fi
@@ -169,14 +179,17 @@ rc=$?
 check "G2 build in $((($(date +%s) - start) / 60)) min ($BUILDLOG)" $rc
 [ "$rc" -eq 0 ] || tail -n 30 "$BUILDLOG"
 
-if [ -x "$ROOT/packaging/ci/extra-build-checks.sh" ] && [ "$rc" -eq 0 ]; then
+# The repository's own assertions read its deb/rpm build tree and log; the
+# Arch build's tree is makepkg's, inside the container, and its log another
+# tool's, so they are not asked of it.
+if [ -x "$ROOT/packaging/ci/extra-build-checks.sh" ] && [ "$rc" -eq 0 ] && [ "$FAMILY" != arch ]; then
     BUILDLOG="$BUILDLOG" SRC="$SRC" OUT="$OUT" FAMILY="$FAMILY" \
         bash "$ROOT/packaging/ci/extra-build-checks.sh"
     check "G2 repository-specific build assertions" $?
 fi
 
 if [ "$rc" -eq 0 ]; then
-    n=$(find "$OUT" -maxdepth 1 -name "*.$FAMILY" | wc -l)
+    n=$(find "$OUT" -maxdepth 1 -name "*.$EXT" | wc -l)
     test "$n" -gt 0; check "G2 built $n $FAMILY package(s)" $?
     find "$OUT" -maxdepth 1 -type f -printf '     %f\n' | sort
     printf '%s\n' "$head_sha" >"$ART/$SLUG/$NAME/.built-from"

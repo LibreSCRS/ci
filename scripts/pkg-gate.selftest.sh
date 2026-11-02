@@ -35,6 +35,7 @@ while [ $# -gt 0 ]; do
     --rm) shift ;;
     -v) IFS=: read -r a b _ <<<"$2"; m[$b]="$a"; shift 2 ;;
     -w|-e|--network) shift 2 ;;
+    --add-host) echo "add-host $2" >>"$STUB_LOG"; shift 2 ;;
     *) break ;;
   esac
 done
@@ -47,6 +48,9 @@ case "$*" in
   "bash /ci-scripts/pkg-build-rpm.sh")
     [ "${STUB_BUILD_RC:-0}" = 0 ] || exit "$STUB_BUILD_RC"
     printf 'rpm\n' >"${m[/out]}/librescrs-x-5.0.0-1.fc43.x86_64.rpm"; exit 0 ;;
+  "bash /ci-scripts/pkg-build-arch.sh")
+    [ "${STUB_BUILD_RC:-0}" = 0 ] || exit "$STUB_BUILD_RC"
+    printf 'zst\n' >"${m[/out]}/librescrs-x-5.0.0-1-x86_64.pkg.tar.zst"; exit 0 ;;
   rm\ -rf\ /w/*) rm -rf "${m[/w]}/${3#/w/}"; exit 0 ;;
 esac
 echo "docker stub: unexpected command: $*" >&2; exit 99
@@ -88,6 +92,27 @@ grep -q 'docker.io/library/debian:13@sha256:[0-9a-f]\{64\} bash /ci-scripts/pkg-
 expect "the build runs in the slug's image by digest" 0 $?
 gate fedora43; rc=$?
 test -f "$work/art/fedora43/LibreX/rpm/librescrs-x-5.0.0-1.fc43.x86_64.rpm"; expect "rpm gate green" "0 0" "$rc $?"
+
+# the Arch recipe: built in the archlinux tool image, .pkg.tar.zst packages
+consumer; gate arch; rc=$?
+test -f "$work/art/arch/LibreX/arch/librescrs-x-5.0.0-1-x86_64.pkg.tar.zst"; built=$?
+grep -q 'docker.io/library/archlinux:base-devel@sha256:[0-9a-f]\{64\} bash /ci-scripts/pkg-build-arch.sh' "$work/docker.log"
+expect "arch gate green: the recipe built in the archlinux tool image by digest" "0 0 0" "$rc $built $?"
+consumer; gate arch STUB_BUILD_RC=1; expect "a failed Arch build is red" 1 $?
+# a fixture whose own source must never leave the machine pins the host to
+# loopback, so an escape fails instead of reaching the real repository
+consumer; : >"$work/docker.log"; gate arch PKG_DOCKER_ADD_HOST="github.com:127.0.0.1 example.org:127.0.0.1"; rc=$?
+grep -qx 'add-host github.com:127.0.0.1' "$work/docker.log" && grep -qx 'add-host example.org:127.0.0.1' "$work/docker.log"
+expect "PKG_DOCKER_ADD_HOST reaches the build container as --add-host" "0 0" "$rc $?"
+consumer; git -C "$work/repo" rm -q packaging/arch/PKGBUILD; git -C "$work/repo" commit -q -m no-arch; gate arch; rc=$?
+grep -q '^FAIL   G1 Arch recipe present' "$work/log"; expect "no Arch recipe is red" "1 0" "$rc $?"
+consumer; printf '#!/bin/sh\nexit 1\n' >"$work/repo/packaging/ci/extra-build-checks.sh"; chmod +x "$work/repo/packaging/ci/extra-build-checks.sh"
+git -C "$work/repo" add -A; git -C "$work/repo" commit -q -m hook
+gate arch; arc=$?; gate debian13; drc=$?
+expect "the deb/rpm build's own assertions are not asked of the Arch build" "0 1" "$arc $drc"
+M="$(mkupstream)"
+consumer "" "" "LM $work/up/LM $M"; mkdir -p "$work/art/arch/LM/arch"; printf 'x\n' >"$work/art/arch/LM/arch/lm-5.0.0-1-x86_64.pkg.tar.zst"
+gate arch; expect "an Arch upstream is found by its .pkg.tar.zst" 0 $?
 
 consumer "LibreSCRS <packages@librescrs.org>"; gate debian13
 expect "a stale Maintainer in debian/control is red" 1 $?

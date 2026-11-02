@@ -4,31 +4,35 @@
 # (started by pkg-verify.sh) with every package of the stack under /pkgs/*/.
 # Asserts what the packages leave on a machine a user installs them on.
 #
-#   S1  the user stack installs (runtime packages; development packages and
-#       the provider the chosen variant excludes are left out)
+#   S1  the user stack installs (runtime packages; development packages are
+#       left out)
 #   S2  nothing of ours links against a library that is not there (ldd)
-#   S3  p11-kit lists EXACTLY ONE LibreSCRS module, and it is the variant's
+#   S3  p11-kit lists EXACTLY ONE LibreSCRS module, and it is the agent's;
+#       a stack below the agent registers none
 #   S4  pkcs11-tool --list-slots over that module succeeds with no card
 #   S5  systemd-analyze verify accepts every unit we install
 #   S6  every D-Bus and polkit file of ours is on a path the daemons read
-#   S7  the direct <-> agent switch behaves as the documented contract for
-#       this package manager (both the documented command and the bare one)
-#   S8  lintian / rpmlint over the packages this run judges (all of them, or
+#   S7  lintian / rpmlint over the packages this run judges (all of them, or
 #       only the file names listed in /report/lint-files.txt -- the
 #       consumer's own; upstream packages are linted in their own
-#       repository); judged on the host by pkg-lint-accept.py
-#   S9  a third provider (the distribution's OpenSC) is MEASURED, not judged
-#   S10 the consumer's own installed-state assertions (PKG_VERIFY_HOOK, a
+#       repository); judged on the host by pkg-lint-accept.py. Skipped BY
+#       NAME, with the reason printed, for the Arch family: both linters
+#       read deb/rpm only, and namcap's findings are printed by the build.
+#   S8  a third provider (the distribution's OpenSC) is MEASURED, not judged
+#   S9  the consumer's own installed-state assertions (PKG_VERIFY_HOOK, a
 #       script mounted by pkg-verify.sh --hook), run LAST in this same
 #       container: it may install subsets and remove packages. It sees its
 #       repository's packages under /pkg and each upstream's under
-#       /pkg-<Repository>, FAMILY=deb|rpm and PKG_MANAGER; its exit status is
-#       the verdict.
+#       /pkg-<Repository>, FAMILY=deb|rpm|arch and PKG_MANAGER; its exit
+#       status is the verdict.
 #
-# Variant: "agent" when librescrs-agent is among the packages, else "direct"
-# when librescrs-pkcs11-direct is, else "none" (a stack below both providers).
+# Every other check is family-neutral and runs for Arch (pacman, the
+# archlinux tool image) as for deb and rpm.
 #
-# Environment: PKG_MANAGER (apt|dnf|zypper), PKG_SLUG. Exit 0 / 1.
+# Variant: "agent" when librescrs-agent is among the packages, else "none" (a
+# stack below the agent: the middleware ships no PKCS#11 module of its own).
+#
+# Environment: PKG_MANAGER (apt|dnf|zypper|pacman), PKG_SLUG. Exit 0 / 1.
 # shellcheck disable=SC2319  # "assert; read its status" is the pattern here, on purpose
 set -uo pipefail
 # Never `producer | grep -q` here: grep -q exits at the first match, the
@@ -59,7 +63,7 @@ apt)
     is_installed() { [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2>/dev/null)" == ii* ]]; }
     files_of() { dpkg -L "$1" 2>/dev/null; }
     name_of() { dpkg-deb -f "$1" Package; }
-    EXT=deb
+    EXT=deb FAMILY=deb
     ;;
 dnf)
     # Fedora's image enables the Cisco openh264 repository; nothing here needs
@@ -75,7 +79,7 @@ dnf)
     is_installed() { rpm -q "$1" >/dev/null 2>&1; }
     files_of() { rpm -ql "$1" 2>/dev/null; }
     name_of() { rpm -qp --qf '%{NAME}' "$1" 2>/dev/null; }
-    EXT=rpm
+    EXT=rpm FAMILY=rpm
     ;;
 zypper)
     zypper -n -q refresh >/dev/null
@@ -84,7 +88,17 @@ zypper)
     is_installed() { rpm -q "$1" >/dev/null 2>&1; }
     files_of() { rpm -ql "$1" 2>/dev/null; }
     name_of() { rpm -qp --qf '%{NAME}' "$1" 2>/dev/null; }
-    EXT=rpm
+    EXT=rpm FAMILY=rpm
+    ;;
+pacman)
+    # Arch supports no partial upgrade: the database refresh is a full one.
+    pacman -Syu --noconfirm >/dev/null
+    pm_tools() { pacman -S --noconfirm --needed "$@" >/dev/null; }
+    pm_files() { pacman -U --noconfirm "$@"; }
+    is_installed() { pacman -Q "$1" >/dev/null 2>&1; }
+    files_of() { pacman -Qlq "$1" 2>/dev/null; }
+    name_of() { pacman -Qqp "$1" 2>/dev/null; }
+    EXT=pkg.tar.zst FAMILY=arch
     ;;
 *) echo "FAIL unknown manager $MANAGER"; exit 1 ;;
 esac
@@ -95,6 +109,7 @@ case "$MANAGER" in
     apt) pm_tools p11-kit file binutils systemd dbus-daemon dbus-user-session ;;
     dnf) pm_tools p11-kit p11-kit-trust file binutils systemd dbus-daemon ;;
     zypper) pm_tools p11-kit p11-kit-tools file binutils findutils systemd dbus-1-daemon ;;
+    pacman) pm_tools p11-kit file binutils findutils systemd dbus ;;
 esac
 
 mapfile -t ALL < <(find "$PKGS" -type f -name "*.$EXT" | sort)
@@ -105,14 +120,12 @@ info "packages: ${!FILE[*]}"
 is_dev() { case "$1" in *-dev|*-devel) return 0 ;; esac; return 1; }
 
 variant=none
-[ -n "${FILE[librescrs-pkcs11-direct]+x}" ] && variant=direct
 [ -n "${FILE[librescrs-agent]+x}" ] && variant=agent
 info "variant: $variant"
 
 stack=()
 for n in "${!FILE[@]}"; do
     is_dev "$n" && continue
-    [ "$variant" = agent ] && [ "$n" = librescrs-pkcs11-direct ] && continue
     stack+=("${FILE[$n]}")
 done
 
@@ -140,11 +153,8 @@ modules() { p11-kit list-modules 2>/dev/null | grep -c '^module: librescrs'; }
 module_path() {  # the module file p11-kit resolves for our registration
     p11-kit list-modules 2>/dev/null | awk '/^module: librescrs/{m=1; next} /^module: /{m=0} m && /^[[:space:]]+path:/{print $2; exit}'
 }
-case "$variant" in
-    agent)  want=librescrs-agent ;;
-    direct) want=librescrs ;;
-    *)      want="" ;;
-esac
+want=""
+[ "$variant" = agent ] && want=librescrs-agent
 n=$(modules)
 if [ -n "$want" ]; then
     test "$n" -eq 1 && grep -qx "module: $want" <<<"$(p11-kit list-modules 2>/dev/null)"
@@ -153,7 +163,7 @@ if [ -n "$want" ]; then
     pm_tools opensc >/dev/null 2>&1 || true
     if command -v pkcs11-tool >/dev/null 2>&1; then
         mp="$(module_path)"
-        [ -n "$mp" ] && [ -e "$mp" ] || mp="$(find "$R"/usr/lib* -path "*pkcs11/$( [ "$variant" = agent ] && echo librescrs-pkcs11-agent || echo librescrs-pkcs11).so" | head -n 1)"
+        [ -n "$mp" ] && [ -e "$mp" ] || mp="$(find "$R"/usr/lib* -path "*pkcs11/librescrs-pkcs11-agent.so" | head -n 1)"
         timeout 60 pkcs11-tool --module "$mp" --list-slots >"$REPORT/list-slots.txt" 2>&1
         rc=$?
         # pkcs11-tool exits 1 when the slot list is empty, which is exactly
@@ -167,13 +177,13 @@ if [ -n "$want" ]; then
         fi
         check "S4 pkcs11-tool --list-slots over $mp answers with no card (rc=$rc)" "$ok"
         sed 's/^/     /' "$REPORT/list-slots.txt" | head -n 10
-        # S9: the distribution's OpenSC registers its own module beside ours.
-        info "S9 providers with the distribution OpenSC installed: $(p11-kit list-modules | grep -c '^module: ') ($(p11-kit list-modules | sed -n 's/^module: //p' | tr '\n' ' '))"
+        # S8: the distribution's OpenSC registers its own module beside ours.
+        info "S8 providers with the distribution OpenSC installed: $(p11-kit list-modules | grep -c '^module: ') ($(p11-kit list-modules | sed -n 's/^module: //p' | tr '\n' ' '))"
     else
         check "S4 pkcs11-tool is available from the distribution's opensc package" 1
     fi
 else
-    test "$n" -eq 0; check "S3 no LibreSCRS module registered below both providers (counted $n)" $?
+    test "$n" -eq 0; check "S3 no LibreSCRS module registered below the agent (counted $n)" $?
 fi
 
 # ── S5 ────────────────────────────────────────────────────────────────────
@@ -219,75 +229,30 @@ else
 fi
 
 # ── S7 ────────────────────────────────────────────────────────────────────
-# The contract a user is told, per package manager (published on the site and
-# in the package descriptions -- keep all three the same):
-#   apt     `apt install ./<other>.deb` switches: the installed provider is
-#           removed (Conflicts), no flag needed.
-#   dnf     `dnf install <other>.rpm` REFUSES (conflict); the switch is
-#           `dnf install --allowerasing <other>.rpm`.
-#   zypper  `zypper install <other>.rpm` REFUSES non-interactively (conflict);
-#           the switch is `zypper install --force-resolution <other>.rpm`.
-# Both halves are asserted: the documented command switches, and the bare
-# command does what the documentation says it does.
-registrations() { local f n=0; for f in "$R"/usr/share/p11-kit/modules/librescrs*; do [ -e "$f" ] && n=$((n + 1)); done; echo "$n"; }
-switch_to() {  # switch_to <label> <to-pkg> <from-pkg>
-    local label="$1" to="$2" from="$3" f="${FILE[$2]}" rc
-    if ! { is_installed "$from" && ! is_installed "$to"; }; then
-        check "S7 $label precondition: $from installed, $to not" 1; return
-    fi
-    case "$MANAGER" in
-    apt)
-        apt-get install -y --no-install-recommends "$f" >"$REPORT/s7-$label.txt" 2>&1; rc=$?
-        check "S7 $label: apt install switches (rc=$rc)" "$rc"
-        ;;
-    dnf)
-        dnf -y install "$f" >"$REPORT/s7-$label-bare.txt" 2>&1; rc=$?
-        test "$rc" -ne 0 && is_installed "$from" && ! is_installed "$to"
-        check "S7 $label: bare dnf install refuses and changes nothing (rc=$rc)" $?
-        dnf -y install --allowerasing "$f" >"$REPORT/s7-$label.txt" 2>&1; rc=$?
-        check "S7 $label: dnf install --allowerasing switches (rc=$rc)" "$rc"
-        ;;
-    zypper)
-        zypper -n --no-gpg-checks install --allow-unsigned-rpm "$f" >"$REPORT/s7-$label-bare.txt" 2>&1; rc=$?
-        test "$rc" -ne 0 && is_installed "$from" && ! is_installed "$to"
-        check "S7 $label: bare zypper install refuses and changes nothing (rc=$rc)" $?
-        zypper -n --no-gpg-checks install --allow-unsigned-rpm --force-resolution "$f" >"$REPORT/s7-$label.txt" 2>&1; rc=$?
-        check "S7 $label: zypper install --force-resolution switches (rc=$rc)" "$rc"
-        ;;
-    esac
-    is_installed "$to" && ! is_installed "$from"
-    check "S7 $label: $to installed, $from removed" $?
-    local nreg nmod
-    nreg="$(registrations)"; nmod="$(modules)"
-    test "$nreg" -eq 1 && test "$nmod" -eq 1
-    check "S7 $label: exactly one registration afterwards (files $nreg, modules $nmod)" $?
-}
-if [ -n "${FILE[librescrs-pkcs11-direct]+x}" ] && [ -n "${FILE[librescrs-agent]+x}" ]; then
-    switch_to agent-to-direct librescrs-pkcs11-direct librescrs-agent
-    switch_to direct-to-agent librescrs-agent librescrs-pkcs11-direct
-else
-    info "S7 not applicable: this stack does not carry both providers"
-fi
-
-# ── S8 ────────────────────────────────────────────────────────────────────
 : >"$REPORT/linted.txt"
 LINT=()
-if [ -f "$REPORT/lint-files.txt" ]; then
-    declare -A want=()
-    while IFS= read -r b; do [ -n "$b" ] && want[$b]=1; done <"$REPORT/lint-files.txt"
-    for f in "${ALL[@]}"; do [ -n "${want[$(basename "$f")]+x}" ] && LINT+=("$f"); done
-    test "${#LINT[@]}" -eq "${#want[@]}" -a "${#LINT[@]}" -gt 0
-    check "S8 every package named for linting is present (${#LINT[@]} of ${#want[@]})" $?
+# For Arch the whole of S7 is the one SKIP line: the lint scope exists only to
+# say what the linters read, so it is not checked when no linter runs.
+if [ "$FAMILY" = arch ]; then
+    echo "SKIP S7 lintian/rpmlint: both read deb/rpm packages only -- namcap's findings on the Arch packages are printed by the build, not judged"
 else
-    LINT=("${ALL[@]}")
+    if [ -f "$REPORT/lint-files.txt" ]; then
+        declare -A want=()
+        while IFS= read -r b; do [ -n "$b" ] && want[$b]=1; done <"$REPORT/lint-files.txt"
+        for f in "${ALL[@]}"; do [ -n "${want[$(basename "$f")]+x}" ] && LINT+=("$f"); done
+        test "${#LINT[@]}" -eq "${#want[@]}" -a "${#LINT[@]}" -gt 0
+        check "S7 every package named for linting is present (${#LINT[@]} of ${#want[@]})" $?
+    else
+        LINT=("${ALL[@]}")
+    fi
+    # One name per line whatever the manager prints: rpm --qf ends with no
+    # newline, and names run together would match no lint-accepted file.
+    for f in "${LINT[@]}"; do printf '%s\n' "$(name_of "$f")" >>"$REPORT/linted.txt"; done
+    info "S7 linting: $(for f in "${LINT[@]}"; do basename "$f"; done | tr '\n' ' ')"
 fi
-# One name per line whatever the manager prints: rpm --qf ends with no newline,
-# and names run together would match no lint-accepted file.
-for f in "${LINT[@]}"; do printf '%s\n' "$(name_of "$f")" >>"$REPORT/linted.txt"; done
-info "S8 linting: $(for f in "${LINT[@]}"; do basename "$f"; done | tr '\n' ' ')"
-if [ "$EXT" = deb ]; then
+if [ "$FAMILY" = deb ]; then
     pm_tools lintian
-    command -v lintian >/dev/null 2>&1; check "S8 lintian is installed" $?
+    command -v lintian >/dev/null 2>&1; check "S7 lintian is installed" $?
     # One tag is suppressed here rather than accepted per package:
     # initial-upload-closes-no-bugs asks a first Debian ARCHIVE upload to close
     # its ITP bug. These packages are published as release files, not uploaded
@@ -295,18 +260,18 @@ if [ "$EXT" = deb ]; then
     lintian --no-tag-display-limit --display-level '>=warning' \
         --suppress-tags initial-upload-closes-no-bugs "${LINT[@]}" >"$REPORT/lintian.txt" 2>&1
     echo "     lintian rc=$? ($(grep -cE '^[EW]: ' "$REPORT/lintian.txt") E/W lines)"
-else
+elif [ "$FAMILY" = rpm ]; then
     pm_tools rpmlint
-    command -v rpmlint >/dev/null 2>&1; check "S8 rpmlint is installed" $?
+    command -v rpmlint >/dev/null 2>&1; check "S7 rpmlint is installed" $?
     rpmlint "${LINT[@]}" >"$REPORT/rpmlint.txt" 2>&1
     echo "     rpmlint rc=$? ($(grep -cE ': [EW]: ' "$REPORT/rpmlint.txt") E/W lines)"
 fi
 
-# ── S10 ───────────────────────────────────────────────────────────────────
+# ── S9 ───────────────────────────────────────────────────────────────────
 if [ -n "${PKG_VERIFY_HOOK:-}" ]; then
-    FAMILY="$EXT" bash "$PKG_VERIFY_HOOK" 2>&1
+    FAMILY="$FAMILY" bash "$PKG_VERIFY_HOOK" 2>&1
     hrc=$?
-    check "S10 the repository's installed-state assertions (hook rc=$hrc)" "$hrc"
+    check "S9 the repository's installed-state assertions (hook rc=$hrc)" "$hrc"
 fi
 
 echo "== pkg-verify-inside $PKG_SLUG ($variant): $([ $fail -eq 0 ] && echo GREEN || echo RED)"

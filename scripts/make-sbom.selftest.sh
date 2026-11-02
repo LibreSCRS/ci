@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # make-sbom.selftest.sh -- a tree carrying every probe's input gives a bill
 # naming each at the version read from the tree; a statically linked upstream
-# at its lock adds itself and what it bundles; every way a bill would be
-# wrong or empty is refused.
+# at its lock adds itself and what it bundles, and so does one shipped as
+# dynamic libraries, said as such; every way a bill would be wrong or empty is
+# refused.
 set -uo pipefail
 # sedi <expr> <file>: edit in place on GNU and BSD sed alike (BSD `sed -i` takes
 # the expression as a backup suffix and leaves the file as it was), and refuse
@@ -92,7 +93,7 @@ A="$W/Agent"; mkdir -p "$A/cmake"
 printf 'FetchContent_Declare(qcbor\n  GIT_TAG %s\n)\n' "$QC" >"$A/cmake/FetchQCBOR.cmake"
 git -C "$A" init -q && git -C "$A" add -A && git -C "$A" commit -qm a
 LA="$(git -C "$A" rev-parse HEAD)"
-L="$W/Linux"; mkdir -p "$L"; echo 5.0.0 >"$L/VERSION"
+L="$W/LibreLinux"; mkdir -p "$L"; echo 5.0.0 >"$L/VERSION"
 printf 'LibreMiddleware https://github.com/LibreSCRS/LibreMiddleware %s\nLibreAgent https://github.com/LibreSCRS/LibreAgent %s\n' "$OSC" "$LA" >"$L/deps.lock"
 GITHUB_REPOSITORY=LibreSCRS/LibreLinux run --root "$L" --out "$W/l.json" --static-dep "LibreAgent=$A" --require libreagent --require qcbor
 expect "a static upstream at its lock adds itself and what it bundles" 0 "2 components (libreagent, qcbor)"
@@ -106,12 +107,52 @@ expect "a static upstream checkout off its lock is refused" 1 "deps.lock locks L
 git -C "$A" reset -q --hard HEAD~1
 run --root "$L" --out "$W/l3.json" --static-dep "LibreDarwin=$A"
 expect "a static upstream with no deps.lock row is refused" 1 "has no LibreDarwin row"
+# two rows for one name: the lock's one reader refuses it, where a reader of
+# its own took the first row and published whatever commit that one named
+cp "$L/deps.lock" "$W/lock.bak"
+printf 'LibreAgent https://github.com/LibreSCRS/LibreAgent %s\n' 1111111111111111111111111111111111111111 >>"$L/deps.lock"
+run --root "$L" --out "$W/l3b.json" --static-dep "LibreAgent=$A"
+expect "a lock with two rows for the static upstream is refused" 1 "does not lock LibreAgent"
+cp "$W/lock.bak" "$L/deps.lock"
 mkdir -p "$W/plain"
 run --root "$L" --out "$W/l4.json" --static-dep "LibreAgent=$W/plain"
 expect "a static upstream that is not a checkout is refused" 1 "not a git checkout"
 sedi "s/$QC/not-a-pin/" "$A/cmake/FetchQCBOR.cmake"
 run --root "$L" --out "$W/l5.json" --static-dep "LibreAgent=$A" --require qcbor
 expect "an upstream that lost its QCBOR pin is refused where qcbor is required" 1 "not found in the tree: qcbor"
+
+# --- an upstream shipped as dynamic libraries beside the binary -----------
+# Same lock check and probe as a static one; only what the bill says about
+# how it ships differs -- a dylib in the bundle is not "linked statically".
+git -C "$A" reset -q --hard   # undo the lost-pin perturbation above
+LA="$(git -C "$A" rev-parse HEAD)"
+D="$W/LibreDarwin"; DM="$W/MidDyn"; mkdir -p "$D" "$DM/thirdparty/nlohmann"; echo 5.0.0 >"$D/VERSION"
+cp "$M/thirdparty/nlohmann/json.hpp" "$DM/thirdparty/nlohmann/"
+git -C "$DM" init -q && git -C "$DM" add -A && git -C "$DM" commit -qm m
+LMD="$(git -C "$DM" rev-parse HEAD)"
+printf 'LibreMiddleware https://github.com/LibreSCRS/LibreMiddleware %s\nLibreAgent https://github.com/LibreSCRS/LibreAgent %s\n' "$LMD" "$LA" >"$D/deps.lock"
+# desc <file> <name> -> that component's description, or "-" when it has none
+desc() { python3 -c 'import json,sys
+for c in json.load(open(sys.argv[1]))["components"]:
+    if c["name"] == sys.argv[2]: print(c.get("description", "-"))' "$1" "$2"; }
+run --root "$D" --repo LibreMac --out "$W/d.json" --static-dep "LibreAgent=$A" --dynamic-dep "LibreMiddleware=$DM" \
+  --require libreagent --require libremiddleware --require nlohmann-json
+expect "a dynamic upstream at its lock adds itself and what it bundles" 0 "4 components (libreagent, libremiddleware, nlohmann-json, qcbor)"
+cases=$((cases + 1))
+if [ "$(desc "$W/d.json" libremiddleware)" = "shipped as dynamic libraries" ] \
+   && [ "$(desc "$W/d.json" libreagent)" = "linked statically" ] \
+   && [ "$(desc "$W/d.json" nlohmann-json)" = "bundled in LibreMiddleware" ] \
+   && [ "$(comp "$W/d.json" libremiddleware)" = "git-$LMD pkg:github/LibreSCRS/LibreMiddleware@$LMD" ] \
+   && python3 "$here/check-sbom" "$W/d.json" >/dev/null; then
+  echo "ok    the bill says the dynamic upstream ships as libraries, the static one is linked"
+else echo "FAIL  the bill says how each upstream ships"; cat "$W/d.json"; fails=1; fi
+echo moved >"$DM/x"; git -C "$DM" add -A; git -C "$DM" commit -qm moved
+run --root "$D" --repo LibreMac --out "$W/d2.json" --dynamic-dep "LibreMiddleware=$DM"
+expect "a dynamic upstream checkout off its lock is refused" 1 "deps.lock locks LibreMiddleware at $LMD"
+git -C "$DM" reset -q --hard HEAD~1
+run --root "$D" --repo LibreMac --out "$W/d3.json" --static-dep "LibreMiddleware=$DM" --dynamic-dep "LibreMiddleware=$DM"
+expect "one upstream named as both static and dynamic is refused" 2 "LibreMiddleware is named twice"
+[ ! -e "$W/d3.json" ] || { echo "FAIL  the bill with a twice-named upstream was written"; fails=1; }
 
 # --- cannot judge -----------------------------------------------------------
 run --root "$M" --repo Mid

@@ -10,7 +10,14 @@ description: >
 
 inputs:
   slug:
-    description: Distribution slug from images.lock (debian13, ubuntu2604, fedora43, fedora44, opensusetw).
+    description: >
+      Distribution slug from images.lock (debian13, ubuntu2604, fedora43,
+      fedora44, opensusetw), or `arch`: the repository's PKGBUILD built by
+      makepkg in the archlinux tool image. Arch packages are never released,
+      so for `arch` the upstreams are always built from deps.lock (an
+      upstream=release call is taken as upstream=source, and the log says so)
+      and nothing is collected as a release asset -- the AUR publishes the
+      recipe. A consumer's slug matrix carries `arch` like any other slug.
     required: true
   upstream:
     description: >
@@ -18,6 +25,7 @@ inputs:
                 commit and build it for the same slug first (CI, rehearsal);
       release = download every upstream's '*.<slug>.<deb|rpm>' assets of
                 release `version` (tag builds; the upstream release must exist).
+                For `arch` this is upstream=source (nothing to download).
     required: true
     default: source
   version:
@@ -58,6 +66,12 @@ outputs:
   art:
     description: Artefact root (upstream and own packages under <slug>/<Repository>/<family>).
     value: ${{ steps.build.outputs.art }}
+  assets:
+    description: >
+      'true' when `dist` holds release assets, 'false' for `arch` (nothing is
+      collected). An upload of `dist` that refuses an empty directory is
+      conditioned on this output, never on the slug's name.
+    value: ${{ steps.build.outputs.assets }}
 
 runs:
   using: composite
@@ -89,6 +103,8 @@ runs:
         for r in $IN_REFS; do args+=(--ref "$r"); done
         echo "art=$art" >>"$GITHUB_OUTPUT"
         echo "dist=$dist" >>"$GITHUB_OUTPUT"
+        family="$("$GITHUB_ACTION_PATH/../../scripts/pkg-images" family "$IN_SLUG")" || exit 2
+        if [ "$family" = arch ]; then echo "assets=false"; else echo "assets=true"; fi >>"$GITHUB_OUTPUT"
         rc=0
         "$GITHUB_ACTION_PATH/../../scripts/pkg-chain.sh" "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/pkg-build-$IN_SLUG.out" || rc=${PIPESTATUS[0]}
         echo "PKG_BUILD_RC=$rc"

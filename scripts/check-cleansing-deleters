@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# check-cleansing-deleters -- a BIGNUM released through a deleter is cleansed
+# first, and the deleter that every other one follows says why.
+#
+# PACE holds secrets that exist ONLY as a BIGNUM: the ephemeral private keys,
+# the x-coordinate of the ECDH shared secret and the decrypted nonce. Nothing
+# that wipes byte vectors reaches them, and plain BN_free hands the limb buffer
+# back with the secret still in it. That was fixed once and lost again when a
+# deduplication pass merged two deleters that differed only in the body: it
+# matched on the name, kept the plain body, and deleted the comment explaining
+# why the other existed. So the call and its reason are checked as separate
+# failures, because last time one of them going was what hid the other.
+#
+# Usage:
+#   check-cleansing-deleters [--root DIR] --canonical <file> [--exceptions F]
+#   check-cleansing-deleters [--root DIR] --mirror <file> --canonical-name <id>
+#                            [--exceptions F]
+#
+# --canonical names the file holding the deleter the others follow; a
+# repository that cannot include it carries a marked copy and names it with
+# --mirror. Paths are relative to the root (--root, else REPO_ROOT, else the
+# git checkout around the current directory).
+#
+# Clauses:
+#   1  `struct BnDeleter` in that file calls BN_clear_free
+#   2  canonical: the comment above it mentions PACE (the reason);
+#      mirror: the comment above it says `MIRROR-OF` and names <id>, so the
+#      next reader knows the body is not free to change
+#   3  no BIGNUM deleter written as a struct calls plain BN_free -- anywhere
+#      in the repository's tracked sources, never excused
+#   4  nor one written as a function pointer or a lambda, except a site
+#      listed in the exceptions file
+#
+# Clauses 3 and 4 are split because a deleter has three shapes and a search for
+# one sees neither of the others; both shapes clause 3 cannot see were once
+# shipped while it reported OK. Both are scoped to deleters on purpose: a bare
+# BN_free on a public value in an error path is not this bug, and a gate that
+# flagged it would be argued away within a release.
+#
+# The exceptions file holds one `path:line  reason` per entry. The line is half
+# the entry -- an amnesty granted to a file covers every deleter written there
+# afterwards. An entry that names no line, whose path is untracked, or whose
+# line no longer releases a BIGNUM that way is itself a failure: an amnesty
+# that outlives its site is how a gate quietly stops measuring.
+#
+# Exit: 0 clean - 1 violation - 2 cannot judge (bad usage, no git work tree,
+#       no such file, no `struct BnDeleter`, no tracked source); never read 2
+#       as a pass.
+set -uo pipefail
+export LC_ALL=C
+
+die2() { echo "check-cleansing-deleters: FATAL: $*" >&2; exit 2; }
+usage="usage: check-cleansing-deleters [--root DIR] (--canonical FILE | --mirror FILE --canonical-name ID) [--exceptions FILE]"
+
+[ "${BASH_VERSINFO[0]:-0}" -ge 4 ] || die2 "needs bash >= 4"
+
+root="${REPO_ROOT:-}"; canonical=""; mirror=""; canonical_name=""; exceptions=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --root|--canonical|--mirror|--canonical-name|--exceptions)
+            [ "$#" -ge 2 ] && [ -n "$2" ] || die2 "$1 needs a value -- $usage" ;;
+    esac
+    case "$1" in
+        --root) root=$2; shift 2 ;;
+        --canonical) canonical=$2; shift 2 ;;
+        --mirror) mirror=$2; shift 2 ;;
+        --canonical-name) canonical_name=$2; shift 2 ;;
+        --exceptions) exceptions=$2; shift 2 ;;
+        *) die2 "unknown argument '$1' -- $usage" ;;
+    esac
+done
+if [ -n "$canonical" ] && [ -n "$mirror" ]; then die2 "--canonical and --mirror are exclusive -- $usage"; fi
+if [ -z "$canonical" ] && [ -z "$mirror" ]; then die2 "name the deleter's file with --canonical or --mirror -- $usage"; fi
+if [ -n "$mirror" ] && [ -z "$canonical_name" ]; then die2 "--mirror needs --canonical-name -- $usage"; fi
+if [ -n "$canonical" ] && [ -n "$canonical_name" ]; then die2 "--canonical-name belongs to --mirror -- $usage"; fi
+
+if [ -z "$root" ]; then root="$(git rev-parse --show-toplevel 2>/dev/null)" || root=""; fi
+[ -n "$root" ] && [ -d "$root" ] || die2 "no repository to judge -- pass --root"
+cd "$root" || exit 2
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || die2 "$root is not a git work tree -- this gate reads git ls-files, nothing else"
+
+file="${canonical:-$mirror}"
+[ -f "$file" ] || die2 "$file not found under $root; nothing was measured"
+if [ -n "$exceptions" ] && [ ! -f "$exceptions" ]; then
+    die2 "the exceptions file $exceptions is not there; nothing excused can be judged"
+fi
+
+fail=0
+
+# --- 1. the deleter cleanses -----------------------------------------------
+decl="$(grep -n '^struct BnDeleter$' "$file" | head -n1 | cut -d: -f1)"
+[ -n "$decl" ] || die2 "no 'struct BnDeleter' in $file; nothing was measured"
+body="$(awk '/^struct BnDeleter$/,/^};$/' "$file")"
+if ! printf '%s\n' "$body" | grep -q 'BN_clear_free'; then
+    echo "ERROR: $file:$decl BnDeleter does not call BN_clear_free." >&2
+    echo "       PACE ephemeral private keys, the ECDH x-coordinate and the decrypted" >&2
+    echo "       nonce exist only as a BIGNUM, and nothing else wipes them." >&2
+    fail=1
+fi
+
+# --- 2. the reason (or the canonical it follows) is written above it -------
+# The window is the comment lines directly above the declaration: 25 hold the
+# canonical's whole doc comment with room to spare, 10 the mirror's marker. A
+# comment that outgrows the window fails closed; the fix is to widen the
+# number, not to move the reason away from the call.
+if [ -n "$canonical" ]; then
+    start=$(( decl > 25 ? decl - 25 : 1 ))
+    if ! sed -n "${start},$((decl - 1))p" "$file" | grep -E '^[[:space:]]*//' | grep -q 'PACE'; then
+        echo "ERROR: $file:$decl the comment above BnDeleter does not mention PACE." >&2
+        echo "       The call and its reason are deleted separately on purpose: a" >&2
+        echo "       cleansing call with no recorded reason is what regressed before." >&2
+        fail=1
+    fi
+else
+    start=$(( decl > 10 ? decl - 10 : 1 ))
+    if ! sed -n "${start},$((decl - 1))p" "$file" | grep -E '^[[:space:]]*//' \
+            | awk -v id="$canonical_name" 'index($0, "MIRROR-OF") && index($0, id) { found = 1 } END { exit !found }'; then
+        echo "ERROR: $file:$decl the comment above BnDeleter no longer says MIRROR-OF" >&2
+        echo "       $canonical_name. A body that matches by accident, with nothing saying" >&2
+        echo "       which deleter it must follow, is a copy only until someone tidies it." >&2
+        fail=1
+    fi
+fi
+
+SCRATCH="$(mktemp -d "${TMPDIR:-/var/tmp}/check-cleansing-deleters.XXXXXX")" || exit 2
+trap 'rm -rf "$SCRATCH"' EXIT
+git ls-files -z -- '*.c' '*.cc' '*.cpp' '*.cxx' '*.h' '*.hh' '*.hpp' '*.m' '*.mm' > "$SCRATCH/files.z" || exit 2
+[ -s "$SCRATCH/files.z" ] || die2 "git ls-files listed no sources at all; nothing was measured"
+
+# --- 3. no BIGNUM deleter written as a member calls plain BN_free ---------
+# Six lines after the signature is the whole body of a deleter written in this
+# style. The space before the star is tolerated because the formatter, not
+# this gate, is what settles it: a security gate that only sees the shape
+# another gate happens to enforce is one .clang-format edit away from
+# measuring nothing. -H so a batch xargs hands grep a single file still
+# carries the path.
+hits="$(xargs -0 -r grep -H -n -A6 'operator()(BIGNUM[[:space:]]*\*' < "$SCRATCH/files.z" \
+        | grep -E '(^|[^_[:alnum:]])BN_free[[:space:]]*\(' || true)"
+if [ -n "$hits" ]; then
+    echo "ERROR: a BIGNUM deleter calls plain BN_free. One policy in this tree:" >&2
+    echo "       a BIGNUM released through a deleter is cleansed first." >&2
+    printf '%s\n' "$hits" >&2
+    fail=1
+fi
+
+# --- 4. nor one written as a function pointer or a lambda -----------------
+raw="$( { xargs -0 -r grep -H -n -A2 -E 'unique_ptr[[:space:]]*<[[:space:]]*BIGNUM' < "$SCRATCH/files.z" \
+            | grep -E '(decltype[[:space:]]*\([[:space:]]*&[[:space:]]*BN_free[[:space:]]*\)|&[[:space:]]*BN_free|,[[:space:]]*BN_free[[:space:]]*[)}])'
+          xargs -0 -r grep -H -n -A6 -E '\[[^]]*\][[:space:]]*\([[:space:]]*BIGNUM[[:space:]]*\*' < "$SCRATCH/files.z" \
+            | grep -E '(^|[^_[:alnum:]])BN_free[[:space:]]*\('
+        } | sort -u)"
+
+excused=()
+if [ -n "$exceptions" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ ^[[:space:]]*(#.*)?$ ]] && continue
+        excused+=("${line%%[[:space:]]*}")
+    done < "$exceptions"
+fi
+
+# grep prints a match as path:line: and a context line as path-line-.
+matches_site() { awk -v m="$1:$2:" -v c="$1-$2-" 'index($0, m) == 1 || index($0, c) == 1 { found = 1 } END { exit !found }'; }
+for entry in ${excused[@]+"${excused[@]}"}; do
+    if [[ ! "$entry" =~ ^(.+):([0-9]+)$ ]]; then
+        echo "ERROR: $exceptions excuses '$entry', which names no line." >&2
+        echo "       Write it as path:line. A bare path excuses every deleter in" >&2
+        echo "       that file, the ones not written yet included." >&2
+        fail=1
+        continue
+    fi
+    path="${BASH_REMATCH[1]}"; at="${BASH_REMATCH[2]}"
+    if ! git ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+        echo "ERROR: $exceptions excuses $entry, whose path is not a tracked file." >&2
+        echo "       An exception nothing can match hides the next one that matters." >&2
+        fail=1
+        continue
+    fi
+    if ! printf '%s\n' "$raw" | matches_site "$path" "$at"; then
+        echo "ERROR: $exceptions excuses $entry, which no longer releases a BIGNUM" >&2
+        echo "       through plain BN_free. Move the line number if the site moved," >&2
+        echo "       drop the entry if the site is gone: a stale amnesty widens" >&2
+        echo "       silently, and the next call site there inherits it." >&2
+        fail=1
+    fi
+done
+
+left="$raw"
+for entry in ${excused[@]+"${excused[@]}"}; do
+    [[ "$entry" =~ ^(.+):([0-9]+)$ ]] || continue
+    left="$(printf '%s\n' "$left" \
+        | awk -v m="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}:" -v c="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-" \
+              'index($0, m) == 1 || index($0, c) == 1 { next } { print }')"
+done
+if [ -n "$left" ]; then
+    echo "ERROR: a BIGNUM is released through a plain BN_free deleter. One policy" >&2
+    echo "       in this tree: a BIGNUM released through a deleter is cleansed" >&2
+    echo "       first, whether the deleter is a struct, a function pointer or a" >&2
+    echo "       lambda." >&2
+    printf '%s\n' "$left" >&2
+    fail=1
+fi
+
+[ "$fail" -eq 0 ] || exit 1
+echo "check-cleansing-deleters: OK ($file: BnDeleter cleanses and $([ -n "$canonical" ] && echo "records why" || echo "names $canonical_name"); no deleter -- struct, function pointer or lambda -- releases a BIGNUM through plain BN_free)"

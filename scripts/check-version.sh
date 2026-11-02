@@ -4,7 +4,7 @@
 # check-version.sh --section <v>
 # check-version.sh --list
 #
-# One question, four arms: does everything in this tree that states a version
+# One question, five arms: does everything in this tree that states a version
 # state the one in VERSION, and does the release it is heading for agree?
 #
 #   lockstep  the CHANGELOG has a non-empty section for <v> (default: the first
@@ -15,13 +15,16 @@
 #   stamp     what project() stamps follows VERSION when the newest tag is a
 #             major behind, and the tag when it is a major ahead.
 #   surfaces  every surface in ci/version-surfaces.txt states VERSION.
+#   modules   cmake/GitVersion.cmake, and cmake/FindOrUseLibreAgent.cmake where
+#             the tree has one, are byte-identical to the canonical modules in
+#             this gate's own checkout (cmake/).
 #
 # They were four scripts copied into seven repositories; three read VERSION,
 # one read the CHANGELOG, and each one's comment explained why the others could
 # not see what it saw. One gate, so no repository runs three arms and believes
 # it asked the question.
 #
-#   --arms     which arms to run (default: all four). A repository with no CMake
+#   --arms     which arms to run (default: all five). A repository with no CMake
 #              build (the macOS host) runs `--arms lockstep`; that is a
 #              statement in the step's gates: list, never a silent skip here.
 #   --min <n>  passed to the floors arm (see there).
@@ -174,6 +177,21 @@
 # A module that ignored git would pass the first and fail the second; one that
 # lets the tag decide unconditionally does the reverse.
 #
+# =============================================================== modules ==
+# How a version is derived from git and VERSION, and how a repository takes
+# LibreAgent from deps.lock, are answered ONCE, in this checkout's cmake/, and
+# every repository carries an exact copy. They were six GitVersion.cmake files
+# with six different bodies (one of them three times the length of the others,
+# and the only one that refused a foreign enclosing repository's tags) and four
+# FindOrUseLibreAgent.cmake files with four names for one switch, one of them of
+# the opposite polarity; beside one copy a second resolver carried the comment
+# "the two used to differ". A fix landed in one copy and nowhere else.
+#
+# Byte equality (cmp), not a diff of meaning: a copy is either the canonical or
+# a fork. GitVersion.cmake must be there in a tree with a CMake build;
+# FindOrUseLibreAgent.cmake only where the repository consumes the agent. A tree
+# with no CMakeLists.txt cannot be measured -- such a repository names its arms.
+#
 # ============================================================== surfaces ==
 # Every surface that states this repo's version must state the one in VERSION.
 #
@@ -211,13 +229,16 @@ set -u
 [ "${BASH_VERSINFO[0]:-0}" -ge 4 ] || { echo "check-version: needs bash >= 4 -- cannot judge" >&2; exit 2; }
 
 usage() {
-    echo "usage: check-version.sh [--version <v>] [--arms lockstep,floors,stamp,surfaces] [--min <n>] [--verbose]" >&2
+    echo "usage: check-version.sh [--version <v>] [--arms lockstep,floors,stamp,surfaces,modules] [--min <n>] [--verbose]" >&2
     echo "       check-version.sh --section <v>" >&2
     echo "       check-version.sh --list" >&2
     exit 2
 }
 
-ARMS=lockstep,floors,stamp,surfaces
+ARMS=lockstep,floors,stamp,surfaces,modules
+# The canonical modules sit beside this gate, in the shared-gates checkout;
+# resolved before the cd into the consumer tree below.
+CANON_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../cmake" 2>/dev/null && pwd)" || CANON_DIR=""
 VER_ARG=""
 SECTION_VER=""
 TOP=check
@@ -826,6 +847,31 @@ fi
 exit "$FAIL"
 }
 
+# ------------------------------------------------------------- modules arm --
+arm_modules() {
+[ -n "$CANON_DIR" ] && [ -f "$CANON_DIR/GitVersion.cmake" ] && [ -f "$CANON_DIR/FindOrUseLibreAgent.cmake" ] || {
+    echo "::error::no canonical modules beside this gate (../cmake) -- the copies were NOT measured" >&2; exit 2; }
+[ -f CMakeLists.txt ] || {
+    echo "::error::no CMakeLists.txt here -- the CMake modules were NOT measured" >&2; exit 2; }
+fail=0
+for m in GitVersion.cmake FindOrUseLibreAgent.cmake; do
+    if [ ! -f "cmake/$m" ]; then
+        if [ "$m" = GitVersion.cmake ]; then
+            echo "::error::no cmake/$m -- this CMake build derives its version some other way than every other repository"
+            fail=1
+        else
+            echo "  -> no cmake/$m (this repository does not consume the agent)"
+        fi
+    elif cmp -s "$CANON_DIR/$m" "cmake/$m"; then
+        echo "  -> cmake/$m is the canonical module"
+    else
+        echo "::error::cmake/$m differs from the canonical LibreSCRS/ci cmake/$m -- copy it, do not fork it"
+        fail=1
+    fi
+done
+exit "$fail"
+}
+
 # -------------------------------------------------------------------- main --
 case "$TOP" in
     section) ( arm_lockstep section "$SECTION_VER" ); exit $? ;;
@@ -840,7 +886,7 @@ IFS=, read -r -a want_arms <<< "$ARMS"
 [ "${#want_arms[@]}" -gt 0 ] || { echo "check-version: no arm named -- nothing to measure" >&2; exit 2; }
 for arm in "${want_arms[@]}"; do
     case "$arm" in
-        lockstep|floors|stamp|surfaces) ;;
+        lockstep|floors|stamp|surfaces|modules) ;;
         *) echo "check-version: unknown arm '$arm' -- cannot judge" >&2; exit 2 ;;
     esac
     case "$seen" in *",$arm,"*) echo "check-version: arm '$arm' named twice -- cannot judge" >&2; exit 2 ;; esac
@@ -849,7 +895,7 @@ done
 
 worst=0   # a disagreement (1) outranks "could not measure" (2) outranks agreement
 ran=0
-for arm in lockstep floors stamp surfaces; do
+for arm in lockstep floors stamp surfaces modules; do
     case "$seen" in *",$arm,"*) ;; *) continue ;; esac
     echo "== check-version: $arm"
     case "$arm" in
@@ -857,6 +903,7 @@ for arm in lockstep floors stamp surfaces; do
         floors)   ( arm_floors check ) ;;
         stamp)    ( arm_stamp ) ;;
         surfaces) ( arm_surfaces ) ;;
+        modules)  ( arm_modules ) ;;
     esac
     rc=$?
     ran=$((ran + 1))

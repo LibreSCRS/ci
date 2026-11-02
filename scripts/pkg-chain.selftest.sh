@@ -42,6 +42,11 @@ case "$*" in
     echo "build $n" >>"$STUB_LOG"
     [ "${STUB_FAIL_FOR:-}" != "$n" ] || exit 1
     printf 'deb\n' >"${m[/out]}/${n}_5.0.0-1_amd64.deb"; exit 0 ;;
+  "bash /ci-scripts/pkg-build-arch.sh")
+    n="$(cat "${m[/s]}/NAME")"
+    echo "arch $n" >>"$STUB_LOG"
+    [ "${STUB_FAIL_FOR:-}" != "$n" ] || exit 1
+    printf 'zst\n' >"${m[/out]}/${n}-5.0.0-1-x86_64.pkg.tar.zst"; exit 0 ;;
   rm\ -rf\ /w/*) rm -rf "${m[/w]}/${3#/w/}"; exit 0 ;;
 esac
 exit 0
@@ -64,7 +69,8 @@ chmod +x "$work/bin"/*
 export PATH="$work/bin:$PATH" PKG_DOCKER=docker PKG_GH=gh STUB_LOG="$work/stub.log"
 
 mkrepo() {  # mkrepo DIR NAME [deps.lock] -> commit
-    rm -rf "$1"; mkdir -p "$1/packaging/debian" "$1/packaging/rpm"
+    rm -rf "$1"; mkdir -p "$1/packaging/debian" "$1/packaging/rpm" "$1/packaging/arch"
+    printf 'pkgname=%s\n' "$2" >"$1/packaging/arch/PKGBUILD"
     printf 'Source: %s\nMaintainer: LibreSCRS <librescrs@proton.me>\n' "$2" >"$1/packaging/debian/control"
     printf '#!/usr/bin/make -f\n' >"$1/packaging/debian/rules"
     printf 'Name: %s\n' "$2" >"$1/packaging/rpm/$2.spec"
@@ -87,6 +93,26 @@ test "$(tr '\n' ' ' <"$STUB_LOG")" = "build la "; expect "source: an upstream bu
 rm -rf "$work/art" "$work/dist"; : >"$STUB_LOG"
 env STUB_FAIL_FOR=lm "$tool" build --slug debian13 --art "$work/art" --root "$work/c" --name LibreAgent --upstream source >"$work/log" 2>&1; rc=$?
 grep -q 'build la' "$STUB_LOG"; expect "source: a failed upstream build stops the chain before the consumer" "1 1" "$rc $?"
+
+# arch: the recipes of the chain, bottom up; nothing is a release asset
+rm -rf "$work/art" "$work/dist"; : >"$STUB_LOG"
+"$tool" build --slug arch --art "$work/art" --root "$work/c" --name LibreAgent --dist "$work/dist" --upstream source >"$work/log" 2>&1; rc=$?
+test "$(tr '\n' ' ' <"$STUB_LOG")" = "arch lm arch la "; order=$?
+test -f "$work/art/arch/LibreAgent/arch/la-5.0.0-1-x86_64.pkg.tar.zst" && test -z "$(ls -A "$work/dist" 2>/dev/null)"; kept=$?
+expect "arch: the chain's recipes built bottom up, no release asset collected" "0 0 0" "$rc $order $kept"
+: >"$STUB_LOG"
+"$tool" build --slug arch --art "$work/art" --root "$work/c" --name LibreAgent --upstream source >"$work/log" 2>&1; rc=$?
+test "$(tr '\n' ' ' <"$STUB_LOG")" = "arch la "; expect "arch: an upstream built from the same commit is reused" "0 0" "$rc $?"
+# A tag build asks every slug for upstream=release; Arch packages are never
+# released, so the arch leg builds the upstreams from their locked commits
+# itself -- the one definition on a tag too -- and downloads nothing.
+rm -rf "$work/art"; : >"$STUB_LOG"
+"$tool" build --slug arch --art "$work/art" --root "$work/c" --name LibreAgent --dist "$work/dist" --upstream release --version 5.0.0 >"$work/log" 2>&1; rc=$?
+test "$(tr '\n' ' ' <"$STUB_LOG")" = "arch lm arch la "; order=$?
+grep -q 'Arch packages are never released' "$work/log"; said=$?
+expect "arch: upstream=release builds the upstreams from deps.lock, downloads nothing, and says so" "0 0 0" "$rc $order $said"
+"$tool" build --slug arch --art "$work/art" --root "$work/c" --name LibreAgent --upstream release >"$work/log" 2>&1
+expect "arch: upstream=release still needs --version (the same call as every slug)" 2 $?
 
 # release: the upstream's slug assets only. The closure still reads the
 # upstream's own deps.lock at its commit; github.com is redirected to the local

@@ -5,8 +5,10 @@
 #
 # Usage:
 #   pkg-images get <slug>        print <repository>:<tag>@sha256:<digest>
-#   pkg-images manager <slug>    print apt | dnf | zypper
-#   pkg-images family <slug>     print deb | rpm
+#   pkg-images manager <slug>    print apt | dnf | zypper | pacman
+#   pkg-images family <slug>     print deb | rpm | arch
+#   pkg-images ext <slug>        print the package file extension: deb | rpm |
+#                                pkg.tar.zst
 #   pkg-images slugs             print every slug, one per line
 #   pkg-images tool-image <name> print <repository>:<tag>@sha256:<digest> of a
 #                                tool container (never a distribution slug)
@@ -17,6 +19,11 @@
 #   pkg-images refresh [--dry-run]
 #                                re-resolve every image digest from its
 #                                registry and rewrite the lock
+#
+# `arch` is a pseudo-slug for the Arch recipes: the AUR publishes recipes, not
+# packages, so it is no distribution slug and `slugs` never lists it. A
+# package build (pkg-gate.sh) for it runs in the archlinux tool image, with
+# manager pacman and family arch.
 #
 # The lock is this repository's own file (it is not a consumer's), so it is
 # found next to this script unless PKG_IMAGES_LOCK names another one.
@@ -36,8 +43,15 @@ die2() { echo "pkg-images: $*" >&2; exit 2; }
 # rows KIND -> the lock's rows of that kind, comments and blanks dropped
 rows() { grep -E "^$1[[:space:]]" "$LOCK" || true; }
 
+ARCH_SLUG=arch ARCH_TOOL=archlinux
+
 image_row() {  # image_row SLUG -> "slug manager ref", or exit 2
     local r
+    if [ "$1" = "$ARCH_SLUG" ]; then
+        r="$(tool_image_row "$ARCH_TOOL" | awk '{ print $2 }')" || exit 2
+        printf '%s pacman %s\n' "$ARCH_SLUG" "$r"
+        return
+    fi
     r="$(rows image | awk -v s="$1" '$2 == s { print $2, $3, $4 }')"
     [ -n "$r" ] || die2 "unknown slug '$1' (known: $(rows image | awk '{printf "%s ", $2}'))"
     [ "$(printf '%s\n' "$r" | wc -l)" -eq 1 ] || die2 "slug '$1' appears more than once"
@@ -176,11 +190,14 @@ case "$cmd" in
     manager) [ $# -eq 1 ] || die2 "usage: manager <slug>"; image_row "$1" | awk '{ print $2 }' ;;
     family)  [ $# -eq 1 ] || die2 "usage: family <slug>"
              m="$(image_row "$1" | awk '{ print $2 }')" || exit 2
-             case "$m" in apt) echo deb ;; dnf|zypper) echo rpm ;; *) die2 "manager '$m'" ;; esac ;;
+             case "$m" in apt) echo deb ;; dnf|zypper) echo rpm ;; pacman) echo arch ;; *) die2 "manager '$m'" ;; esac ;;
+    ext)     [ $# -eq 1 ] || die2 "usage: ext <slug>"
+             m="$(image_row "$1" | awk '{ print $2 }')" || exit 2
+             case "$m" in apt) echo deb ;; dnf|zypper) echo rpm ;; pacman) echo pkg.tar.zst ;; *) die2 "manager '$m'" ;; esac ;;
     slugs)   rows image | awk '{ print $2 }' ;;
     tool-image) [ $# -eq 1 ] || die2 "usage: tool-image <name>"; tool_image_row "$1" | awk '{ print $2 }' ;;
     add)     cmd_add "$@" ;;
     check)   cmd_check ;;
     refresh) cmd_refresh "$@" ;;
-    *) die2 "usage: pkg-images get|manager|family|slugs|tool-image|add|check|refresh" ;;
+    *) die2 "usage: pkg-images get|manager|family|ext|slugs|tool-image|add|check|refresh" ;;
 esac

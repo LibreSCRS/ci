@@ -386,9 +386,37 @@ relative=$( cd "$d" && sh -c '. scripts/project-version.sh; project_version .' )
 run "surfaces: the helper is judged through an absolute root" 1 "$d" $S
 says "surfaces: ... and the older tag is what it reports" yes "states '4.2.0'"
 
+echo "-- modules arm"
+canon="$here/../cmake"
+M="--arms modules"
+canonical() {  # canonical <dir>: the tree carries the canonical version module
+    mkdir -p "$1/cmake"; cp "$canon/GitVersion.cmake" "$1/cmake/GitVersion.cmake"
+}
+d=$work/mod1; mkrepo "$d" 5.0.0; canonical "$d"; project_file "$d"
+run "modules: the canonical version module, no agent module" 0 "$d" $M
+cp "$canon/FindOrUseLibreAgent.cmake" "$d/cmake/"
+run "modules: and the canonical agent module" 0 "$d" $M
+printf '# local tweak\n' >> "$d/cmake/FindOrUseLibreAgent.cmake"
+run "modules: a forked agent module" 1 "$d" $M
+says "modules: ... is named" yes "cmake/FindOrUseLibreAgent.cmake differs"
+d=$work/mod2; mkrepo "$d" 5.0.0; canonical "$d"; project_file "$d"
+sed 's/LIMIT_COUNT 1/LIMIT_COUNT 2/' "$canon/GitVersion.cmake" > "$d/cmake/GitVersion.cmake"
+cmp -s "$canon/GitVersion.cmake" "$d/cmake/GitVersion.cmake" && { echo "  FAIL  the perturbation changed nothing"; fails=$((fails + 1)); }
+run "modules: a version module differing in one byte" 1 "$d" $M
+says "modules: ... is named" yes "cmake/GitVersion.cmake differs"
+d=$work/mod3; mkrepo "$d" 5.0.0; project_file "$d"
+run "modules: a CMake build with no version module" 1 "$d" $M
+d=$work/mod4; mkrepo "$d" 5.0.0; canonical "$d"
+run "modules: no CMakeLists.txt cannot be judged" 2 "$d" $M
+mkdir -p "$work/lonely/scripts"; cp "$subject" "$work/lonely/scripts/"
+cases=$((cases + 1)); red=$((red + 1))
+( cd / && REPO_ROOT="$work/mod1" bash "$work/lonely/scripts/check-version.sh" $M ) > "$out" 2>&1
+[ "$?" = 2 ] && printf '  ok    %-60s rc=2\n' "modules: no canonical modules beside the gate" \
+    || { printf '  FAIL  %-60s\n' "modules: no canonical modules beside the gate"; sed 's/^/          /' "$out"; fails=$((fails + 1)); }
+
 echo "-- the merged gate"
 whole() {  # whole <dir>: a tree on which every arm agrees
-    d=$1; mkrepo "$d" 5.0.0; module "$d" newer-wins; project_file "$d"
+    d=$1; mkrepo "$d" 5.0.0; canonical "$d"; project_file "$d"
     changelog "$d" '## [Unreleased] — 5.0.0\n\n- entry\n'
     mkdir -p "$d/ci"; printf 'rpm-spec-version  pkg.spec\n' > "$d/ci/version-surfaces.txt"
     printf 'Name: x\nVersion: 5.0.0\n' > "$d/pkg.spec"
@@ -396,7 +424,7 @@ whole() {  # whole <dir>: a tree on which every arm agrees
 }
 d=$work/m1; whole "$d"
 run "every arm agrees on a whole tree" 0 "$d"
-says "... and all four arms ran" yes "4 arm(s) run, verdict rc=0"
+says "... and all five arms ran" yes "5 arm(s) run, verdict rc=0"
 d=$work/m2; whole "$d"; add "$d" src/b.cmake 'find_package(LibreAgent 4.0 REQUIRED CONFIG)'
 run "one arm red makes the gate red" 1 "$d"
 says "... and the red arm is named" yes "floors rc=1"

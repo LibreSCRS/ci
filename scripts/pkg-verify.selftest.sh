@@ -4,7 +4,9 @@
 # Self-test for pkg-verify.sh with docker replaced by a stub standing in for
 # the container run: a red smoke check and an unaccepted lint finding each make
 # the verdict red; a run that produced no report, an empty package set and an
-# unknown slug cannot be judged.
+# unknown slug cannot be judged. The Arch pseudo-slug installs its
+# .pkg.tar.zst packages in the archlinux tool image with pacman, and its lint
+# judgement is skipped by name, with the reason printed.
 set -uo pipefail
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 tool="$here/pkg-verify.sh"
@@ -24,7 +26,7 @@ cat >"$work/bin/docker" <<'EOF'
 [ "$1" = run ] || exit 0; shift
 declare -A m=()
 while [ $# -gt 0 ]; do
-  case "$1" in --rm) shift ;; -v) IFS=: read -r a b _ <<<"$2"; m[$b]="$a"; shift 2 ;; -e|--network) shift 2 ;; *) break ;; esac
+  case "$1" in --rm) shift ;; -v) IFS=: read -r a b _ <<<"$2"; m[$b]="$a"; shift 2 ;; -e) echo "$2" >>"$STUB_LOG.env"; shift 2 ;; --network) shift 2 ;; *) break ;; esac
 done
 echo "$1 ${*:2}" >>"$STUB_LOG"
 for k in "${!m[@]}"; do echo "$k=${m[$k]}"; done | sort >"$STUB_LOG.mounts"
@@ -93,6 +95,26 @@ hv --hook "$work/hook.sh" --name LibreKDE; expect "a hook whose repository has n
 hv --hook "$work/nohook.sh" --name LibreLinux; expect "a hook that is not a file cannot be judged" 2 $?
 hv --hook "$work/hook.sh"; expect "a hook without --name cannot be judged" 2 $?
 v; rc=$?; grep -q '^/hook.sh=' "$work/docker.log.mounts"; expect "no hook, nothing mounted for one" "0 1" "$rc $?"
+
+# --slug arch: the layout pkg-build leaves for the pseudo-slug
+mkdir -p "$work/a/LibreLinux/arch" "$work/a/LibreMiddleware/arch"
+printf 'x\n' >"$work/a/LibreLinux/arch/librescrs-agent-5.0.0-1-x86_64.pkg.tar.zst"
+printf 'x\n' >"$work/a/LibreMiddleware/arch/librescrs-middleware-5.0.0-1-x86_64.pkg.tar.zst"
+av() {  # av [ENV=VAL...] [tool args...]
+    local e=()
+    while [ $# -gt 0 ] && [[ "$1" == *=* ]]; do e+=("$1"); shift; done
+    : >"$work/docker.log"; : >"$work/docker.log.env"
+    env "${e[@]}" "$tool" --slug arch --packages "$work/a" --accepted "$work/acc" "$@" >"$work/log" 2>&1
+}
+av --lint "$work/a/LibreLinux" --hook "$work/hook.sh" --name LibreLinux; rc=$?
+grep -q 'archlinux:base-devel@sha256:[0-9a-f]\{64\} bash /ci-scripts/pkg-verify-inside.sh' "$work/docker.log" \
+  && grep -qx 'PKG_MANAGER=pacman' "$work/docker.log.env" \
+  && grep -qx "/pkg=$work/a/LibreLinux/arch" "$work/docker.log.mounts" \
+  && grep -q '^pkg-verify: lint not judged on arch: .* -- ' "$work/log"
+expect "arch: .pkg.tar.zst installed with pacman in the archlinux tool image, lint skipped by name" "0 0" "$rc $?"
+av STUB_RC=1; expect "arch: a red smoke check is red" 1 $?
+mkdir -p "$work/a/LibreEmpty"
+av --lint "$work/a/LibreEmpty"; expect "arch: a lint scope with no package cannot be judged" 2 $?
 
 [ "$fail" -eq 0 ] || { echo "pkg-verify.selftest: FAILED"; exit 1; }
 echo "selftest: $cases cases, $red red-proved"

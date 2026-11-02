@@ -22,9 +22,9 @@ touchall() { for f in "$@"; do printf 'x\n' >"$work/$f"; done; }
 
 # green: deb set with a .changes beside it
 fresh
-touchall in/liblibrescrs5_5.0.0-1_amd64.deb in/librescrs-pkcs11-direct_5.0.0-1_all.deb in/x_5.0.0-1_amd64.changes
+touchall in/liblibrescrs5_5.0.0-1_amd64.deb in/librescrs-card-plugins_5.0.0-1_amd64.deb in/x_5.0.0-1_amd64.changes
 "$tool" debian13 "$work/out" "$work/in" >"$work/log" 2>&1; rc=$?
-test -f "$work/out/liblibrescrs5_5.0.0-1_amd64.debian13.deb" -a -f "$work/out/librescrs-pkcs11-direct_5.0.0-1_all.debian13.deb"; named=$?
+test -f "$work/out/liblibrescrs5_5.0.0-1_amd64.debian13.deb" -a -f "$work/out/librescrs-card-plugins_5.0.0-1_amd64.debian13.deb"; named=$?
 test "$(find "$work/out" -type f | wc -l)" -eq 2; only=$?
 grep -q 'not published: .*x_5.0.0-1_amd64.changes' "$work/log"; listed=$?
 expect "deb set collected with the slug, .changes listed not published" "0 0 0 0" "$rc $named $only $listed"

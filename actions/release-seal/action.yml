@@ -50,12 +50,7 @@ runs:
             echo "rehearsal on $GITHUB_REF, version $WANT from the preflight"
             exit 0 ;;
         esac
-        out="$("$GITHUB_ACTION_PATH/../../scripts/release-context.sh" "$MODE")"
-        got="$(printf '%s\n' "$out" | sed -n 's/^version=//p')"
-        if [ "$got" != "$WANT" ]; then
-          echo "::error::the preflight said version '$WANT', this job derives '$got' -- the jobs disagree about what is released"
-          exit 1
-        fi
+        "$GITHUB_ACTION_PATH/../../scripts/release-context.sh" "$MODE" --want-version "$WANT"
 
     - name: Install cosign
       uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2

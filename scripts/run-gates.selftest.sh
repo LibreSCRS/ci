@@ -159,6 +159,19 @@ mkdir -p "$d/packaging/arch"; printf 'pkgname=x\n' > "$d/packaging/arch/PKGBUILD
     --recipe-args=--bogus-option) >"$out" 2>&1
 expect "23 check-recipe: --recipe-args reach the script" 2 "$?" "usage: check-recipe"
 
+# --- check-cleansing-deleters needs the repository's options, and gets them
+#     with this root: a deleter that does not cleanse fails.
+d=$(fixture cd)
+mkdir -p "$d/include"
+printf '// PACE secrets\nstruct BnDeleter\n{\n    void operator()(BIGNUM* p) const { BN_free(p); }\n};\n' > "$d/include/Ptr.h"
+commit "$d"
+(cd "$T" && REPO_ROOT="$d" python3 "$RG" --gates check-cleansing-deleters) >"$out" 2>&1
+expect "24 check-cleansing-deleters: no --deleter-args cannot be judged" 2 "$?" "deleter-args"
+(cd "$T" && REPO_ROOT="$d" python3 "$RG" --gates check-cleansing-deleters \
+    --deleter-args="--canonical include/Ptr.h") >"$out" 2>&1
+expect "25 check-cleansing-deleters: the options and the root reach the script" 1 "$?" \
+    "does not call BN_clear_free"
+
 # --- check-version-lockstep reaches check-version.sh against this root
 d=$(fixture ver)
 printf '5.0.0\n' > "$d/VERSION"

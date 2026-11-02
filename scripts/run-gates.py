@@ -11,7 +11,7 @@ passed.
 Usage:
   run-gates.py --gates "G1 G2 ..." [--root DIR] [--repo NAME] [--build-dir D]
                [--build-log F] [--warning-leg W] [--floor FILE]
-               [--recipe-args "..."]
+               [--recipe-args "..."] [--deleter-args "..."]
 
 The repository judged is --root, else REPO_ROOT, else $GITHUB_WORKSPACE, else
 the git checkout around the current directory. Its name (deps-lock asks for
@@ -49,6 +49,13 @@ GATES = {
                      lambda c: ["--root", c["root"], "--repo", c["repo"]]
                      + shlex.split(c["recipe_args"]), ()),
     "check-workflows": ("python", "check-workflows.py", lambda c: [], ()),
+    # A BIGNUM released through a deleter is cleansed first. Which file holds
+    # the deleter the others follow (--canonical, or a marked --mirror of it)
+    # and the exceptions file are the repository's, so they come through
+    # --deleter-args; without them there is nothing to judge.
+    "check-cleansing-deleters": ("bash4", "check-cleansing-deleters",
+                                 lambda c: ["--root", c["root"]]
+                                 + shlex.split(c["deleter_args"]), ("deleter_args",)),
     "selftests": ("bash4", "run-selftests.sh", lambda c: ["--root", c["root"]], ()),
     # Everything in the tree that states a version states VERSION's, and the
     # CHANGELOG has the section the release is heading for.
@@ -73,7 +80,8 @@ GATES = {
                      ("build_dir", "build_log")),
 }
 
-INPUT_FLAG = {"build_dir": "build-dir", "build_log": "build-log"}
+INPUT_FLAG = {"build_dir": "build-dir", "build_log": "build-log",
+              "deleter_args": "deleter-args"}
 
 
 def repo_root(explicit=None):
@@ -110,6 +118,7 @@ def main(argv):
     ap.add_argument("--warning-leg", default="", help="warning-baseline leg")
     ap.add_argument("--floor", default="", help="test-floor file (default ci/test-floor.txt)")
     ap.add_argument("--recipe-args", default="", help="extra check-recipe options")
+    ap.add_argument("--deleter-args", default="", help="check-cleansing-deleters options")
     args = ap.parse_args(argv)
 
     try:
@@ -127,7 +136,8 @@ def main(argv):
                 or os.path.basename(root))
         ctx = {"root": root, "repo": repo, "build_dir": args.build_dir,
                "build_log": args.build_log, "warning_leg": args.warning_leg,
-               "floor": args.floor, "recipe_args": args.recipe_args}
+               "floor": args.floor, "recipe_args": args.recipe_args,
+               "deleter_args": args.deleter_args}
         missing = sorted({INPUT_FLAG[i] for g in gates for i in GATES[g][3] if not ctx[i]})
         if missing:
             raise Cannot(f"{', '.join(gates)} need {', '.join('--' + m for m in missing)}")

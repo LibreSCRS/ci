@@ -28,7 +28,7 @@ inputs:
       pre-release tag the lockstep arm is not applied: a pre-release publishes
       ahead of its CHANGELOG section.
     required: false
-    default: lockstep,floors,stamp,surfaces
+    default: lockstep,floors,stamp,surfaces,modules
   version-min:
     description: check-version --min (the floors this repository is known to carry).
     required: false

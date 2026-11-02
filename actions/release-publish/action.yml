@@ -42,15 +42,19 @@ runs:
       env:
         MODE: ${{ inputs.mode }}
         WANT: ${{ inputs.version }}
+        WANT_PRE: ${{ inputs.is_prerelease }}
         REPO_ROOT: ${{ inputs.repo-root }}
       run: |
         set -euo pipefail
-        out="$("$GITHUB_ACTION_PATH/../../scripts/release-context.sh" "$MODE")"
-        got="$(printf '%s\n' "$out" | sed -n 's/^version=//p')"
-        if [ "$got" != "$WANT" ]; then
-          echo "::error::the preflight said version '$WANT', this job derives '$got' -- the jobs disagree about what is released"
-          exit 1
-        fi
+        # A composite action does not enforce `required: true`: an input the
+        # caller never wired arrives empty. release-context.sh refuses an empty
+        # or disagreeing version or is_prerelease before anything is published.
+        # Its ::error:: lines are on stdout, so the captured text is printed
+        # whatever the outcome.
+        rc=0
+        out="$("$GITHUB_ACTION_PATH/../../scripts/release-context.sh" "$MODE" --want-version "$WANT" --want-prerelease "$WANT_PRE")" || rc=$?
+        printf '%s\n' "$out"
+        [ "$rc" -eq 0 ] || exit "$rc"
         printf '%s\n' "$out" >> "$GITHUB_OUTPUT"
 
     - name: Release notes from the CHANGELOG

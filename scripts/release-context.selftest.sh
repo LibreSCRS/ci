@@ -34,8 +34,9 @@ check() {  # check <name> <want-rc> <needle|-> -- <command...>
 
 tree="$work/tree"; mkdir -p "$tree"; printf '5.0.0\n' > "$tree/VERSION"
 decoy="$work/decoy"; mkdir -p "$decoy"; printf '9.9.9\n' > "$decoy/VERSION"
-ctx() {  # ctx <ref> <mode>
-    env -u GITHUB_WORKSPACE REPO_ROOT="$tree" GITHUB_REF="$1" bash "$subject" "$2"
+ctx() {  # ctx <ref> <mode> [option...]
+    local ref=$1; shift
+    env -u GITHUB_WORKSPACE REPO_ROOT="$tree" GITHUB_REF="$ref" bash "$subject" "$@"
 }
 
 check "M1 publish on a tag" 0 "version=5.0.0" -- ctx refs/tags/5.0.0 publish
@@ -55,6 +56,18 @@ check "V5 a two-part version" 1 "not X.Y.Z" -- ctx refs/tags/5.0 publish
 printf 'unreleased\n' > "$work/bad"; mkdir -p "$work/badtree"; cp "$work/bad" "$work/badtree/VERSION"
 check "V6 a VERSION that is not a version" 1 "not X.Y.Z" -- \
     env REPO_ROOT="$work/badtree" GITHUB_REF=refs/heads/main bash "$subject" rehearse
+
+check "W1 the preflight's version and pre-release flag agree" 0 "is_prerelease=true" -- \
+    ctx refs/tags/5.0.0-rc1 publish --want-version 5.0.0-rc1 --want-prerelease true
+check "W2 an empty is_prerelease (an input never wired) is refused" 1 "neither true nor false" -- \
+    ctx refs/tags/5.0.0-rc1 publish --want-version 5.0.0-rc1 --want-prerelease ""
+check "W3 a final flag for an -rc tag is refused" 1 "is_prerelease=false, this job derives true" -- \
+    ctx refs/tags/5.0.0-rc1 publish --want-version 5.0.0-rc1 --want-prerelease false
+check "W4 a version the preflight did not say is refused" 1 "the jobs disagree" -- \
+    ctx refs/tags/5.0.1 publish --want-version 5.0.0
+check "W5 an empty version is refused" 1 "the jobs disagree" -- ctx refs/tags/5.0.0 publish --want-version ""
+check "W6 an unknown option" 2 "unknown argument" -- ctx refs/tags/5.0.0 publish --prerelease
+check "W7 an option without its value" 2 "usage" -- ctx refs/tags/5.0.0 publish --want-prerelease
 
 check "R1 rehearse on a branch with no VERSION" 2 "no VERSION" -- \
     env REPO_ROOT="$work/nowhere" GITHUB_REF=refs/heads/main bash "$subject" rehearse

@@ -3,10 +3,12 @@
 # selftest-platforms: linux  (packages are built and judged in Linux containers)
 # Self-test for pkg-verify-inside.sh outside a container: the package managers,
 # p11-kit, ldd, pkcs11-tool and systemd-analyze are stubs over a fake root.
-# A green stack passes for apt, dnf and zypper; two registered providers, a
-# D-Bus file off the daemon's path, an unresolved library, a failing
-# pkcs11-tool, a unit the verifier rejects, and a manager whose bare install
-# switches providers where the contract says it refuses, are each red.
+# A green stack passes for apt, dnf, zypper and pacman (Arch: lintian/rpmlint
+# skipped by name, with the reason printed), and so does a stack below the
+# agent that registers no module; two registered providers, a module
+# registered below the agent, a D-Bus file off the daemon's path, an
+# unresolved library, a failing pkcs11-tool and a unit the verifier rejects
+# are each red.
 # shellcheck disable=SC2319  # "assert; read its status" is the pattern here, on purpose
 set -uo pipefail
 here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,30 +25,19 @@ expect() {
 
 B="$work/bin"; mkdir -p "$B"
 # ── the stub world ────────────────────────────────────────────────────────
-# A fake package is a text file: "name N", "conflicts N", "file PATH KIND"
+# A fake package is a text file: "name N", "file PATH KIND"
 # (KIND: elf | elf-missing | text | bad-unit), "module NAME PATH".
 cat >"$B/stubpm" <<'EOF'
 #!/usr/bin/env bash
 # stubpm <manager> <args...>: install fake package files into STUB_ROOT.
 mgr="$1"; shift
 S="$STUB_STATE"; R="$STUB_ROOT"; mkdir -p "$S"
-force=0; files=()
+files=()
 for a in "$@"; do
-  case "$a" in --allowerasing|--force-resolution) force=1 ;; -*) ;; *) [ -f "$a" ] && files+=("$a") ;; esac
+  case "$a" in -*) ;; *) [ -f "$a" ] && files+=("$a") ;; esac
 done
 [ "${#files[@]}" -gt 0 ] || exit 0          # distribution tools: always "installed"
 field() { sed -n "s/^$1 //p" "$2"; }
-for f in "${files[@]}"; do
-  n="$(field name "$f")"
-  for c in $(field conflicts "$f"); do
-    if [ -f "$S/$c" ]; then
-      if [ "$mgr" != apt ] && [ "$force" = 0 ] && [ -z "${STUB_BARE_SWITCHES:-}" ]; then
-        echo "Problem: $n conflicts with $c"; exit 1
-      fi
-      while read -r p; do rm -f "$p"; done <"$S/$c"; rm -f "$S/$c"
-    fi
-  done
-done
 for f in "${files[@]}"; do
   n="$(field name "$f")"; : >"$S/$n"
   while read -r kind p k; do
@@ -73,6 +64,16 @@ cat >"$B/zypper" <<'XEOF'
 exec stubpm zypper "$@"
 XEOF
 printf '#!/usr/bin/env bash\nexec stubpm dnf "$@"\n' >"$B/dnf"
+cat >"$B/pacman" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  -Syu) exit 0 ;;
+  -Qqp) sed -n 's/^name //p' "${!#}" ;;
+  -Qlq) [ -f "$STUB_STATE/$2" ] && cat "$STUB_STATE/$2" ;;
+  -Q)   [ -f "$STUB_STATE/$2" ] ;;
+  *)    exec stubpm pacman "$@" ;;
+esac
+EOF
 cat >"$B/dpkg-query" <<'EOF'
 #!/usr/bin/env bash
 [ -f "$STUB_STATE/${!#}" ] && printf 'ii '
@@ -138,30 +139,33 @@ shift; exec "$@"
 EOF
 chmod +x "$B"/*
 
+# the consumer's hook (S9), used by the Arch case and the S9 cases
+cat >"$work/hook.sh" <<'HOOK'
+#!/usr/bin/env bash
+echo "PASS hook saw FAMILY=$FAMILY"
+exit "${HOOK_RC:-0}"
+HOOK
+
 # ── the stack ─────────────────────────────────────────────────────────────
 stack() {  # stack <ext> [extra-kind...]: write the fake packages
     local e="$1" p="$work/pkgs/0"; shift
     rm -rf "$work/pkgs" "$work/root" "$work/state" "$work/report"; mkdir -p "$p" "$work/root" "$work/report"
-    local noconf="" lib=elf dbus=/usr/share/dbus-1/services/org.librescrs.Agent.service unit=text extra=""
+    local lmmod="" lib=elf dbus=/usr/share/dbus-1/services/org.librescrs.Agent.service unit=text extra=""
     for k in "$@"; do
         case "$k" in
             missing-lib) lib=elf-missing ;;
             dbus-off-path) dbus=/etc/dbus-1/session.d/org.librescrs.Agent.conf ;;
             bad-unit) unit=bad-unit ;;
             second-provider) extra=1 ;;
-            no-conflicts) noconf=1 ;;
+            middleware-module) lmmod=1 ;;
         esac
     done
-    printf 'name liblibrescrs5\nfile /usr/lib/x/libLibreSCRS_Core.so.5 %s\nfile /usr/lib/x/pkcs11/librescrs-pkcs11.so elf\n' "$lib" >"$p/liblibrescrs5.$e"
+    printf 'name liblibrescrs5\nfile /usr/lib/x/libLibreSCRS_Core.so.5 %s\n' "$lib" >"$p/liblibrescrs5.$e"
+    [ -z "$lmmod" ] || printf 'file /usr/lib/x/pkcs11/librescrs-pkcs11.so elf\nmodule librescrs /usr/lib/x/pkcs11/librescrs-pkcs11.so\n' >>"$p/liblibrescrs5.$e"
     printf 'name librescrs-card-plugins\nfile /usr/lib/x/librescrs/plugins/eid.so elf\n' >"$p/librescrs-card-plugins.$e"
     printf 'name liblibrescrs-dev\nfile /usr/include/LibreSCRS/a.h text\n' >"$p/liblibrescrs-dev.$e"
-    {
-        echo 'name librescrs-pkcs11-direct'
-        [ -n "$noconf" ] || echo 'conflicts librescrs-agent'
-        echo 'module librescrs /usr/lib/x/pkcs11/librescrs-pkcs11.so'
-    } >"$p/librescrs-pkcs11-direct.$e"
-    [ "${STACK_DIRECT_ONLY:-}" = 1 ] && return
-    printf 'name librescrs-agent\nconflicts librescrs-pkcs11-direct\nmodule librescrs-agent /usr/lib/x/pkcs11/librescrs-pkcs11-agent.so\nfile /usr/lib/x/pkcs11/librescrs-pkcs11-agent.so elf\nfile /usr/libexec/librescrs-agent elf\nfile /usr/lib/systemd/user/librescrs-agent.service %s\nfile %s text\nfile /usr/share/polkit-1/actions/org.librescrs.agent.configure.policy text\n' "$unit" "$dbus" >"$p/librescrs-agent.$e"
+    [ "${STACK_BELOW_AGENT:-}" = 1 ] && return
+    printf 'name librescrs-agent\nmodule librescrs-agent /usr/lib/x/pkcs11/librescrs-pkcs11-agent.so\nfile /usr/lib/x/pkcs11/librescrs-pkcs11-agent.so elf\nfile /usr/libexec/librescrs-agent elf\nfile /usr/lib/systemd/user/librescrs-agent.service %s\nfile %s text\nfile /usr/share/polkit-1/actions/org.librescrs.agent.configure.policy text\n' "$unit" "$dbus" >"$p/librescrs-agent.$e"
     printf 'name librescrs-pinentry-kde\nfile /usr/libexec/librescrs-pinentry-kde elf\n' >"$p/librescrs-pinentry-kde.$e"
     [ -z "$extra" ] || printf 'name librescrs-extra\nmodule librescrs-extra /usr/lib/x/pkcs11/extra.so\n' >"$p/librescrs-extra.$e"
 }
@@ -173,28 +177,45 @@ verify() {  # verify <manager> [env...]
 }
 
 stack deb; verify apt; rc=$?
-grep -q '^PASS S3 exactly one LibreSCRS module, and it is librescrs-agent' "$work/log"; s3=$?
-grep -q '^PASS S7 direct-to-agent: exactly one registration afterwards (files 1, modules 1)' "$work/log"; s7=$?
-expect "apt agent stack green, both switches measured" "0 0 0" "$rc $s3 $s7"
+grep -q '^PASS S3 exactly one LibreSCRS module, and it is librescrs-agent' "$work/log"
+expect "apt agent stack green, the agent's module is the one registered" "0 0" "$rc $?"
 grep -q 'liblibrescrs-dev' "$work/state/liblibrescrs-dev" 2>/dev/null; test ! -e "$work/state/liblibrescrs-dev"
 expect "development packages are not part of the user stack" 0 $?
 stack rpm; mkdir -p "$work/repos"; printf '[fedora-cisco-openh264]\nenabled=1\n' >"$work/repos/fedora-cisco-openh264.repo"
 verify dnf PKG_DNF_REPO_DIR="$work/repos"; rc=$?
 grep -qx 'enabled=0' "$work/repos/fedora-cisco-openh264.repo"
-expect "dnf agent stack green (bare install refuses, --allowerasing switches), openh264 repo off" "0 0" "$rc $?"
-stack rpm; verify zypper; expect "zypper agent stack green (bare refuses, --force-resolution switches)" 0 $?
-STACK_DIRECT_ONLY=1 stack deb; verify apt; rc=$?
-grep -q '^PASS S3 exactly one LibreSCRS module, and it is librescrs ' "$work/log"; expect "a stack without the agent is the direct variant" "0 0" "$rc $?"
+expect "dnf agent stack green, openh264 repo off" "0 0" "$rc $?"
+stack rpm; verify zypper; expect "zypper agent stack green" 0 $?
+stack pkg.tar.zst; verify pacman PKG_VERIFY_HOOK="$work/hook.sh"; rc=$?
+grep -q '^PASS S3 exactly one LibreSCRS module, and it is librescrs-agent' "$work/log" \
+  && grep -q '^SKIP S7 lintian/rpmlint: .* -- ' "$work/log" && ! grep -q '^PASS S7 ' "$work/log" \
+  && [ ! -s "$work/report/linted.txt" ] && grep -q '^PASS hook saw FAMILY=arch' "$work/log"
+expect "pacman agent stack green, S7 skipped by name with its reason, the hook sees FAMILY=arch" "0 0" "$rc $?"
+# a real run lints its own packages (the action's lint: own), so the lint
+# scope is there: S7 is still the one SKIP line, not a PASS beside it
+stack pkg.tar.zst; printf 'librescrs-agent.pkg.tar.zst\nlibrescrs-pinentry-kde.pkg.tar.zst\n' >"$work/report/lint-files.txt"
+verify pacman; rc=$?
+test "$(grep -E '^[A-Z]+ +S7 ' "$work/log" | cut -c1-12)" = "SKIP S7 lint"
+expect "pacman with a lint scope: S7 is only the SKIP line" "0 0" "$rc $?"
+stack pkg.tar.zst missing-lib; verify pacman; rc=$?
+grep -q '^FAIL S2 ' "$work/log"; expect "pacman: an unresolved shared library is red" "1 0" "$rc $?"
+STACK_BELOW_AGENT=1 stack pkg.tar.zst middleware-module; verify pacman; rc=$?
+grep -q '^FAIL S3 no LibreSCRS module registered below the agent (counted 1)' "$work/log"
+expect "pacman: a module the middleware registers on its own is red" "1 0" "$rc $?"
+stack deb; verify apt; rc=$?; grep -q '^SKIP S7' "$work/log"
+expect "deb/rpm never skip lint" "0 1" "$rc $?"
+STACK_BELOW_AGENT=1 stack deb; verify apt; rc=$?
+grep -q '^PASS S3 no LibreSCRS module registered below the agent (counted 0)' "$work/log"
+expect "a stack below the agent registers no module" "0 0" "$rc $?"
+STACK_BELOW_AGENT=1 stack deb middleware-module; verify apt; rc=$?
+grep -q '^FAIL S3 no LibreSCRS module registered below the agent (counted 1)' "$work/log"
+expect "a module the middleware registers on its own is red" "1 0" "$rc $?"
+stack deb middleware-module; verify apt; rc=$?
+grep -q '^FAIL S3 exactly one LibreSCRS module, and it is librescrs-agent (counted 2)' "$work/log"
+expect "a middleware module beside the agent's is red" "1 0" "$rc $?"
 
-stack rpm; verify dnf STUB_BARE_SWITCHES=1
-expect "dnf whose bare install switches contradicts the documented contract" 1 $?
-stack rpm; verify zypper STUB_BARE_SWITCHES=1
-expect "zypper whose bare install switches contradicts the documented contract" 1 $?
 stack deb second-provider; verify apt; rc=$?
 grep -q '^FAIL S3 ' "$work/log"; expect "two registered LibreSCRS providers are red" "1 0" "$rc $?"
-stack deb no-conflicts; verify apt; rc=$?
-grep -q '^FAIL S7 agent-to-direct: librescrs-pkcs11-direct installed, librescrs-agent removed' "$work/log"
-expect "a provider that does not conflict leaves two registrations: red" "1 0" "$rc $?"
 stack deb dbus-off-path; verify apt; rc=$?
 grep -q '^FAIL S6 ' "$work/log"; expect "a D-Bus file off the daemon's path is red" "1 0" "$rc $?"
 stack deb missing-lib; verify apt; rc=$?
@@ -219,23 +240,18 @@ stack deb; verify apt; rc=$?
 grep -qx 'liblibrescrs5.deb' "$work/lint-args"; expect "without a scope every package is linted" "0 0" "$rc $?"
 stack deb; printf 'librescrs-agent.deb\nlibrescrs-gone.deb\n' >"$work/report/lint-files.txt"
 verify apt; rc=$?
-grep -q '^FAIL S8 every package named for linting is present' "$work/log"; expect "a scope naming a package that is not there is red" "1 0" "$rc $?"
+grep -q '^FAIL S7 every package named for linting is present' "$work/log"; expect "a scope naming a package that is not there is red" "1 0" "$rc $?"
 
-# S10: the consumer's hook runs last, in the same run, with FAMILY set, and its
+# S9: the consumer's hook runs last, in the same run, with FAMILY set, and its
 # exit status is the verdict.
-cat >"$work/hook.sh" <<'HOOK'
-#!/usr/bin/env bash
-echo "PASS hook saw FAMILY=$FAMILY"
-exit "${HOOK_RC:-0}"
-HOOK
 rm -f "$work/report/lint-files.txt"
 stack deb; verify apt PKG_VERIFY_HOOK="$work/hook.sh"; rc=$?
-grep -q '^PASS hook saw FAMILY=deb' "$work/log" && grep -q '^PASS S10 ' "$work/log"
+grep -q '^PASS hook saw FAMILY=deb' "$work/log" && grep -q '^PASS S9 ' "$work/log"
 expect "the repository hook runs in the same run and passes" "0 0" "$rc $?"
-tail -n 3 "$work/log" | grep -q '^PASS S10 '; expect "the hook runs after every stack check" 0 $?
+tail -n 3 "$work/log" | grep -q '^PASS S9 '; expect "the hook runs after every stack check" 0 $?
 stack deb; verify apt PKG_VERIFY_HOOK="$work/hook.sh" HOOK_RC=1; rc=$?
-grep -q '^FAIL S10 ' "$work/log"; expect "a failing hook is red" "1 0" "$rc $?"
-stack deb; verify apt; rc=$?; grep -q "S10" "$work/log"; expect "no hook: green, and no S10 line" "0 1" "$rc $?"
+grep -q '^FAIL S9 ' "$work/log"; expect "a failing hook is red" "1 0" "$rc $?"
+stack deb; verify apt; rc=$?; grep -q "S9 " "$work/log"; expect "no hook: green, and no S9 line" "0 1" "$rc $?"
 
 [ "$fail" -eq 0 ] || { echo "pkg-verify-inside.selftest: FAILED"; exit 1; }
 echo "selftest: $cases cases, $red red-proved"

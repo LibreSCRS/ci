@@ -6,10 +6,12 @@
 # build. (Upstream main moving ahead is seen when `bump-deps to-head` lands in
 # a consumer and its CI builds against it -- not by a second weekly stack.)
 #
-# Weekly and on demand (refs from the inputs). GitHub
-# stops `schedule` in a repository with no activity for 60 days; release-train
-# preflight reads the date of the last green run of this workflow, so a
-# silenced schedule is seen before a tag and not after.
+# Weekly and on demand (refs from the inputs). Nothing on the release path
+# reads this workflow: release-train does not wait for it, and a red or
+# silenced run (GitHub stops `schedule` in a repository with no activity for
+# 60 days) does not stop a tag. Each repository's release rehearsal installs
+# only its own chain; the whole stack installed together on a clean machine is
+# proved after the tags, by the package repository's publish probe.
 #
 # Slugs: LibreKDE is not built on openSUSE Tumbleweed (Plasma libraries have no
 # stable ABI on a rolling distribution). Leap 16.0 is not in the set: its

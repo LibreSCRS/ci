@@ -4,18 +4,20 @@ description: >
   Install a whole LibreSCRS package stack in a clean container of the slug's
   image and judge it: shared libraries resolve, p11-kit lists exactly one
   LibreSCRS module for the variant, pkcs11-tool lists slots with no card,
-  systemd units verify, D-Bus/polkit files sit on the daemons' paths, the
-  direct<->agent switch behaves as documented for the package manager, and
+  systemd units verify, D-Bus/polkit files sit on the daemons' paths, and
   lintian/rpmlint findings are all accepted by lint-accepted/. An optional
   repository hook adds the repository's own installed-state assertions, run
-  last in the same container.
+  last in the same container. For the pseudo-slug `arch` the .pkg.tar.zst
+  packages pkg-build left are installed with pacman in the archlinux tool
+  image and judged by the same checks; the lintian/rpmlint judgement, which
+  reads deb/rpm only, is skipped by name with its reason in the log.
 
 inputs:
   slug:
-    description: Distribution slug from images.lock.
+    description: Distribution slug from images.lock, or `arch`.
     required: true
   packages:
-    description: Newline- or space-separated directories holding the stack's .deb/.rpm files.
+    description: Newline- or space-separated directories holding the stack's .deb/.rpm (or, for arch, .pkg.tar.zst) files.
     required: true
   report:
     description: Directory that keeps the raw logs; on failure they are printed to the job log and summarised in the run summary.
@@ -38,7 +40,7 @@ inputs:
     description: >
       Optional script (a path relative to the workspace, or absolute) with the
       repository's own installed-state assertions. It runs LAST inside the same
-      clean container, after every stack check, as `bash` with FAMILY=deb|rpm
+      clean container, after every stack check, as `bash` with FAMILY=deb|rpm|arch
       and PKG_MANAGER set, its repository's packages under /pkg and each
       upstream's under /pkg-<Repository>; exit 0 passes. It may install
       subsets and remove packages.

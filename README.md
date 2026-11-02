@@ -8,9 +8,12 @@ references an action here by commit SHA in its workflow, and nothing else.
   `selftest: <n> cases, <r> red-proved`; `scripts/run-selftests.sh` runs them.
 - `actions/` — composite actions the consumers call (`gates`, `checkout-deps`,
   `release-preflight`, `release-seal`, `release-publish`, `pkg-build`,
-  `pkg-verify`).
+  `pkg-verify`, `select-xcode`).
 - `actions/gates` — runs the gates its `gates:` input names (see the action for
   the list); an empty list or an unknown name is "cannot judge" (exit 2).
+- `cmake/` — the CMake modules every repository carries as an exact copy
+  (`GitVersion.cmake`, `FindOrUseLibreAgent.cmake`); `check-version` holds the
+  copies to these.
 - `images.lock` — container images by digest and packaging tools by version and
   checksum.
 

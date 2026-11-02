@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: LGPL-2.1-or-later
-# release-context.sh <mode> -- what a release run is allowed to do, and which
-# version it is about, decided once for every job of the run.
+# release-context.sh <mode> [--want-version V] [--want-prerelease true|false]
+# -- what a release run is allowed to do, and which version it is about,
+# decided once for every job of the run.
 #
 #   mode      rehearse | publish. `publish` is only legal on a tag ref: a
 #             branch carries no signed tag, and a release created from one
@@ -17,19 +18,37 @@
 #             exemption and by the publish flag alike, so the two cannot drift.
 #             Any other suffix is refused rather than guessed at.
 #
+# A later job passes what the preflight job told it with --want-version and
+# --want-prerelease; a value that is not what this derives is refused. A
+# composite action does not enforce `required: true`, so a caller that never
+# wired an input hands over an empty string -- for is_prerelease that would
+# publish a pre-release as the latest stable release. Empty is refused like
+# any other disagreement.
+#
 # Prints key=value lines on stdout (mode, ref, tag, version, is_prerelease);
 # the composite actions append them to $GITHUB_OUTPUT. Reads GITHUB_REF and
 # the consumer tree from REPO_ROOT (default $GITHUB_WORKSPACE, then the git
 # toplevel of the current directory) -- never this script's own location.
 #
 # Exit: 0 the run may proceed - 1 it may not (publish on a branch, a malformed
-#       or unmarked-suffix version) - 2 cannot judge (no ref, no VERSION, an
-#       unknown mode).
+#       or unmarked-suffix version, a --want-* that disagrees) - 2 cannot judge
+#       (no ref, no VERSION, an unknown mode or option).
 set -uo pipefail
 
 [ "${BASH_VERSINFO[0]:-0}" -ge 4 ] || { echo "FATAL: needs bash >= 4 -- cannot judge" >&2; exit 2; }
-[ "$#" -eq 1 ] || { echo "FATAL: usage: release-context.sh <rehearse|publish>" >&2; exit 2; }
-mode=$1
+usage="usage: release-context.sh <rehearse|publish> [--want-version V] [--want-prerelease true|false]"
+[ "$#" -ge 1 ] || { echo "FATAL: $usage" >&2; exit 2; }
+mode=$1; shift
+want_version=""; want_pre=""; check_version=0; check_pre=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --want-version) [ "$#" -ge 2 ] || { echo "FATAL: $usage" >&2; exit 2; }
+                        want_version=$2; check_version=1; shift 2 ;;
+        --want-prerelease) [ "$#" -ge 2 ] || { echo "FATAL: $usage" >&2; exit 2; }
+                        want_pre=$2; check_pre=1; shift 2 ;;
+        *) echo "FATAL: unknown argument '$1' -- $usage" >&2; exit 2 ;;
+    esac
+done
 case "$mode" in
     rehearse|publish) ;;
     *) echo "FATAL: mode '$mode' is neither rehearse nor publish -- cannot judge" >&2; exit 2 ;;
@@ -72,5 +91,21 @@ case "$version" in
         exit 1 ;;
     *) pre=false ;;
 esac
+
+if [ "$check_version" = 1 ] && [ "$want_version" != "$version" ]; then
+    echo "::error::the preflight said version '$want_version', this job derives '$version' -- the jobs disagree about what is released"
+    exit 1
+fi
+if [ "$check_pre" = 1 ]; then
+    case "$want_pre" in
+        true|false) ;;
+        *) echo "::error::is_prerelease '$want_pre' is neither true nor false -- pass the preflight job's is_prerelease output"
+           exit 1 ;;
+    esac
+    if [ "$want_pre" != "$pre" ]; then
+        echo "::error::the preflight said is_prerelease=$want_pre, this job derives $pre for $version -- the jobs disagree about what is released"
+        exit 1
+    fi
+fi
 
 printf 'mode=%s\nref=%s\ntag=%s\nversion=%s\nis_prerelease=%s\n' "$mode" "$ref" "$tag" "$version" "$pre"

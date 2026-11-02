@@ -20,6 +20,12 @@
 #                     are downloaded (public assets: `gh release download`).
 #   Then the consumer is built by pkg-gate.sh, and with --dist its packages are
 #   collected into DIST as `<package>.<slug>.<deb|rpm>` (pkg-collect.sh).
+#   The pseudo-slug `arch` builds the Arch recipes (pkg-images), and nothing is
+#   collected -- the AUR publishes the recipe, never a package, so there is no
+#   release asset to download or to make. Its upstreams are therefore always
+#   built from their deps.lock commits: upstream=release (what a tag build asks
+#   of every slug) is taken as upstream=source for `arch`, and said so, so a
+#   consumer's slug matrix carries `arch` with no condition of its own.
 # fetch:
 #   the release-mode download on its own: files matching GLOB of release V of
 #   OWNER/NAME into DIR. Zero matches, or a debug package, is a refusal.
@@ -93,8 +99,13 @@ cmd_build() {
     [ -n "$root" ] || root="$(git rev-parse --show-toplevel 2>/dev/null)" || die 2 "no root"
     root="$(cd "$root" && pwd)" || die 2 "root $root"
     [ -n "$name" ] || name="$(basename "$root")"
-    local fam
+    local fam ext
     fam="$("$here/pkg-images" family "$slug")" || exit 2
+    ext="$("$here/pkg-images" ext "$slug")" || exit 2
+    if [ "$fam" = arch ] && [ "$mode" = release ]; then
+        echo "pkg-chain: Arch packages are never released -- the upstreams are built from their deps.lock commits, not downloaded from $ver"
+        mode=source
+    fi
     mkdir -p "$art" || die 2 "art $art"
     art="$(cd "$art" && pwd)" || die 2 "art $art"
 
@@ -114,7 +125,7 @@ cmd_build() {
             continue
         fi
         if [ "$(cat "$art/$slug/$up/.built-from" 2>/dev/null)" = "$sha" ] \
-           && ls "$art/$slug/$up/$fam"/*."$fam" >/dev/null 2>&1; then
+           && ls "$art/$slug/$up/$fam"/*."$ext" >/dev/null 2>&1; then
             echo "   $up ${sha:0:12}: already built for $slug under $art, reused"
             continue
         fi
@@ -125,7 +136,9 @@ cmd_build() {
     done <<<"$rows"
 
     "$here/pkg-gate.sh" --slug "$slug" --art "$art" --root "$root" --name "$name" || return $?
-    if [ -n "$dist" ]; then
+    if [ -n "$dist" ] && [ "$fam" = arch ]; then
+        echo "pkg-chain: Arch packages are built to prove the recipe and are not collected"
+    elif [ -n "$dist" ]; then
         "$here/pkg-collect.sh" "$slug" "$dist" "$art/$slug/$name/$fam" || return $?
     fi
 }
