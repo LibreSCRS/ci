@@ -19,6 +19,7 @@ W="$(mktemp -d "${TMPDIR:-/var/tmp}/select-xcode-st.XXXXXX")" || exit 2
 trap 'rm -rf "$W"' EXIT
 cases=0 red=0 fails=0
 TB="${SELECT_XCODE_SELFTEST_BASH:-/bin/bash}"
+# shellcheck disable=SC2016  # $BASH_VERSION belongs to the bash under test
 echo "select-xcode.sh under $TB: $("$TB" -c 'echo "bash $BASH_VERSION"' 2>&1 | head -n 1)"
 
 # Stubs: an Xcode is <app>/Contents/Developer with a `version` file (what

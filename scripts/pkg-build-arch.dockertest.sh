@@ -80,7 +80,9 @@ gate() {  # gate <art> <Repo>
     PKG_DOCKER_ADD_HOST=github.com:127.0.0.1 timeout -k 30 1800 "$here/pkg-gate.sh" --slug arch --art "$work/$1" --root "$work/src/$2" --name "$2" >"$log" 2>&1
 }
 
+# shellcheck disable=SC2016  # recipe text: makepkg expands $srcdir/$pkgdir
 lower_body='    install -Dm644 "$srcdir/Lower/data.txt" "$pkgdir/usr/share/librescrs-dt/lower.txt"'
+# shellcheck disable=SC2016  # recipe text, expanded by makepkg
 upper_body='    test -f /usr/share/librescrs-dt/lower.txt
     install -Dm644 "$srcdir/Upper/data.txt" "$pkgdir/usr/share/librescrs-dt/upper.txt"'
 L="$(repo Lower librescrs-dt-lower "$lower_body")"

@@ -92,7 +92,9 @@ g5_repo() {   # -> DECLARED | MISSING | INCONSISTENT | NO_RECIPES
         grep -q "jsonschema" "$f" && hits=$((hits + 1))
     done
     printf 'need=%s recipes=%s hits=%s ' "$need" "$recipes" "$hits"
-    if [ "$recipes" -lt 2 ]; then echo NO_RECIPES; return 1; fi
+    # Which recipes a family needs is G1's question; this one asks only that
+    # the recipes there are agree, so a single recipe agrees with itself.
+    if [ "$recipes" -eq 0 ]; then echo NO_RECIPES; return 1; fi
     if [ "$need" -eq 1 ]; then
         if [ "$hits" -eq "$recipes" ]; then echo DECLARED; return 0; else echo MISSING; return 1; fi
     fi

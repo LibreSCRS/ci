@@ -38,7 +38,9 @@ want() {  # want <label> <expected> <got>
 }
 refused() {  # refused <label> <rc> <needle>: a configure that must fail, and say why
     cases=$((cases + 1))
-    if [ "$2" -ne 0 ] && grep -qF -- "$3" "$W/log"; then echo "ok   $1 (rc=$2)"; red=$((red + 1))
+    # CMake wraps a long message across lines, so the needle is matched with
+    # line breaks and indentation folded to single spaces.
+    if [ "$2" -ne 0 ] && tr -s ' \n' '  ' <"$W/log" | grep -qF -- "$3"; then echo "ok   $1 (rc=$2)"; red=$((red + 1))
     else echo "FAIL $1: rc=$2, want a failure saying '$3'"; sed 's/^/  | /' "$W/log"; fail=1; fi
 }
 configure() {  # configure <src> [cmake args...]: rc of a fresh configure; log in $W/log

@@ -129,6 +129,7 @@ SRCDEST="$B/src-cache"
 EOF
 [ -n "$ROOTLESS" ] || chown -R builder: "$B"
 
+# shellcheck disable=SC2016  # the script runs in the builder's shell, which expands it
 as_builder env GIT_CONFIG_GLOBAL="$B/gitconfig" GIT_CONFIG_NOSYSTEM=1 bash -c '
     set -e
     cd "$1/tree"

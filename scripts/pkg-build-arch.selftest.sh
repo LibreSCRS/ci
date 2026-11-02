@@ -77,7 +77,7 @@ tree() {  # tree [source-line]: the exported tree of a repository with a submodu
     local src=${1:-}
     # shellcheck disable=SC2016  # $pkgver is the recipe's, expanded by makepkg
     [ -n "$src" ] || src='"git+https://github.com/LibreSCRS/Fixture.git#tag=$pkgver?signed"'
-    rm -rf "$work/t" "$work/out" "$work/up" "$work/rec" "$work/home"
+    rm -rf "${work:?}/t" "${work:?}/out" "${work:?}/up" "${work:?}/rec" "${work:?}/home"
     mkdir -p "$work/t/packaging/arch" "$work/t/thirdparty/sub" "$work/out" "$work/up" "$work/rec" "$work/home"
     cat >"$work/t/packaging/arch/PKGBUILD" <<EOF
 pkgname=fixture
@@ -98,20 +98,22 @@ build() {
 }
 
 tree; build; rc=$?
-test -f "$work/out/fixture-5.0.0-1-x86_64.pkg.tar.zst"; out=$?
+out=1; test -f "$work/out/fixture-5.0.0-1-x86_64.pkg.tar.zst" && out=0
 grep -qx -- '-s --noconfirm --nocheck --skippgpcheck' "$work/rec/args"; args=$?
 expect "the recipe builds over the committed tree, as makepkg -s --nocheck" "0 0 0" "$rc $out $args"
 grep -qx VERSION "$work/rec/files" && grep -qx generated.h "$work/rec/files" && ! grep -q '^thirdparty/sub/' "$work/rec/files"
 expect "the served tag is the tree at pkgver: ignored-but-tracked kept, submodule contents left out" 0 $?
-test "$(tail -n 1 "$work/rec/options")" = '!debug'; expect "the builder's makepkg.conf turns debug packages off" 0 $?
+dbg=1; test "$(tail -n 1 "$work/rec/options")" = '!debug' && dbg=0
+expect "the builder's makepkg.conf turns debug packages off" 0 "$dbg"
 test "$(wc -l <"$work/rec/namcap")" -eq 2 && grep -q '^namcap: .* W: a finding namcap prints' "$work/log"
 expect "namcap reads the recipe and the package, and is printed" 0 $?
 
+# shellcheck disable=SC2016  # $pkgver is the recipe's, expanded by makepkg
 tree '"fx::git+https://github.com/LibreSCRS/Fixture.git#tag=$pkgver?signed"'; build STUB_DIR=fx
 expect "a recipe naming its own source's directory is judged in that directory" 0 $? "built the served commit"
 tree; build STUB_ESCAPE="$work/github.gitconfig"; rc=$?
-test -z "$(ls -A "$work/out")"
-expect "a makepkg that built the real host's tag, not the served one, is red, and nothing is collected" "1 0" "$rc $?" "not the served commit"
+empty=1; test -z "$(ls -A "$work/out")" && empty=0
+expect "a makepkg that built the real host's tag, not the served one, is red, and nothing is collected" "1 0" "$rc $empty" "not the served commit"
 # Where makepkg checks the source out is the script's to say, not the image's.
 printf 'BUILDDIR=%s/elsewhere\n' "$work" >"$work/image-makepkg.conf"
 tree; build STUB_SYSTEM_CONF="$work/image-makepkg.conf"
@@ -124,8 +126,10 @@ expect "no checkout at src/<dir> cannot be judged, is not blamed on the git conf
 
 tree '"git+https://github.com/LibreSCRS/Fixture.git#branch=main"'; build
 expect "a recipe building a branch, not its tag, is red" 1 $? "must build exactly one LibreSCRS signed tag"
+# shellcheck disable=SC2016  # $pkgver is the recipe's, expanded by makepkg
 tree '"git+https://github.com/LibreSCRS/Fixture.git#tag=v$pkgver?signed"'; build
 expect "a recipe whose tag is not pkgver is red" 1 $? "not pkgver 5.0.0"
+# shellcheck disable=SC2016  # $pkgver is the recipe's, expanded by makepkg
 tree '"git+https://github.com/LibreSCRS/Fixture.git#tag=$pkgver?signed" "git+https://github.com/LibreSCRS/Other.git#tag=$pkgver?signed"'; build
 expect "a recipe building two LibreSCRS tags is red" 1 $? "it names 2"
 tree; build STUB_MAKEPKG_RC=4; expect "a failed makepkg is red" 1 $? "makepkg failed"
