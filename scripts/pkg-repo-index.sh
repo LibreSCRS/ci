@@ -12,7 +12,7 @@
 # Containers are named pkg-repo-idx-$$-* and removed on exit; what they write
 # is handed back to the caller's uid.
 #
-# Environment: PKG_DOCKER, PKG_DOCKER_NETWORK as pkg-gate.sh.
+# Environment: PKG_DOCKER as pkg-gate.sh.
 # Exit codes: 0 done, 2 cannot judge.
 set -uo pipefail
 
@@ -20,8 +20,6 @@ here="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)" |
 die2() { echo "pkg-repo-index: $* -- cannot judge" >&2; exit 2; }
 DOCKER="${PKG_DOCKER:-docker}"
 command -v "$DOCKER" >/dev/null 2>&1 || die2 "$DOCKER is not on PATH"
-NET=()
-[ -z "${PKG_DOCKER_NETWORK:-}" ] || NET=(--network "$PKG_DOCKER_NETWORK")
 own="$(id -u):$(id -g)"
 cname="pkg-repo-idx-$$-$RANDOM"
 # shellcheck disable=SC2329  # invoked by the EXIT trap
@@ -36,7 +34,7 @@ case "$mode" in
         dir="$(cd -- "$2" && pwd)"
         img="$("$here/pkg-images" get debian13)" || die2 "no debian13 image"
         # shellcheck disable=SC2016  # the script runs in the container; its $ are not ours
-        "$DOCKER" run --rm --name "$cname" "${NET[@]}" -v "$dir:/in:ro" "$img" bash -c '
+        "$DOCKER" run --rm --name "$cname" -v "$dir:/in:ro" "$img" bash -c '
             cd /in && find . -name "*.deb" | LC_ALL=C sort | while IFS= read -r f; do
                 printf "%s\t%s\t%s\t%s\n" "${f#./}" "$(dpkg-deb -f "$f" Package)" "$(dpkg-deb -f "$f" Version)" "$(dpkg-deb -f "$f" Architecture)"
             done' || die2 "dpkg-deb failed"
@@ -46,7 +44,7 @@ case "$mode" in
         tree="$(cd -- "$2" && pwd)"
         img="$("$here/pkg-images" get debian13)" || die2 "no debian13 image"
         # shellcheck disable=SC2016  # the script runs in the container; its $ are not ours
-        "$DOCKER" run --rm --name "$cname" "${NET[@]}" -v "$tree:/t" -e "CODENAME=$3" -e "OWN=$own" "$img" bash -c '
+        "$DOCKER" run --rm --name "$cname" -v "$tree:/t" -e "CODENAME=$3" -e "OWN=$own" "$img" bash -c '
             set -eu
             trap "chown -R \"$OWN\" /t" EXIT
             export DEBIAN_FRONTEND=noninteractive LC_ALL=C
@@ -62,7 +60,7 @@ case "$mode" in
         tree="$(cd -- "$2" && pwd)"
         img="$("$here/pkg-images" get fedora43)" || die2 "no fedora43 image"
         # shellcheck disable=SC2016  # the script runs in the container; its $ are not ours
-        "$DOCKER" run --rm --name "$cname" "${NET[@]}" -v "$tree:/t" -e "SLUG=$3" -e "OWN=$own" \
+        "$DOCKER" run --rm --name "$cname" -v "$tree:/t" -e "SLUG=$3" -e "OWN=$own" \
             -e "REVISION=${PKG_REPO_REVISION:-}" "$img" bash -c '
             set -eu
             trap "chown -R \"$OWN\" /t" EXIT

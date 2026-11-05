@@ -280,8 +280,6 @@ chown -R $OWN /w'''
     def tool_(*argv):
         return sh(sys.executable, "-I", TOOL, *argv)
 
-    p = tool_("verify-tree", "--tree", out1, "--keyset", "rehearsal", "--unsigned", "--now", str(NOW + 60))
-    check("verify-tree --unsigned: the assembled tree's hash chain holds", p.returncode == 0, detail=p.stdout + p.stderr)
     signed = os.path.join(work, "signed")
     shutil.copytree(out1, signed)
     p = tool_("sign-index", "--tree", signed, "--keyset", "rehearsal")

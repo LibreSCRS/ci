@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: LGPL-2.1-or-later
-"""Self-test for pkg-repo.py select, fetch-releases, fetch-prev, sign-index,
+"""Self-test for pkg-repo.py fetch-releases, fetch-prev, sign-index,
 verify-tree and watch, and for the run blocks of actions/pkg-repo and
 actions/pkg-sign where they decide alone (the published output, the key
 refusals), with fakes
@@ -125,36 +125,12 @@ def check(name, p, want, text=None, red_case=False, extra=None):
         print(f"ok   {name}")
 
 
-def select(name, json_text, want_rc, want_out=None, keep=2, minimum="5.0.0", red_case=False):
-    p_json = os.path.join(root, "rel-" + name.split(":")[0].replace(" ", "-") + ".json")
-    write(p_json, json_text)
-    p = run(["select", "--releases", p_json, "--keep", str(keep), "--min", minimum])
-    check(name, p, want_rc, red_case=red_case,
-          extra=lambda: "Traceback" not in p.stdout + p.stderr
-          and (want_out is None or p.stdout.split() == want_out))
-
-
 def calls(f):
     try:
         return open(os.path.join(f, "calls.log")).read()
     except OSError:
         return ""
 
-
-# ---- select
-select("1 select: newest first, prerelease and old skipped",
-       json.dumps([dict(tag_name="5.0.0", prerelease=False, draft=False),
-                   dict(tag_name="5.0.1", prerelease=False, draft=False),
-                   dict(tag_name="4.2.3", prerelease=False, draft=False),
-                   dict(tag_name="5.1.0-rc1", prerelease=True, draft=False),
-                   dict(tag_name="5.2.0", prerelease=False, draft=True)]),
-       0, ["5.0.1", "5.0.0"])
-select("2 select: one tag is enough", rel("5.0.0"), 0, ["5.0.0"])
-select("3 select: only 4.2.0 is red", rel("4.2.0"), 1, red_case=True)
-select("4 select: packages keep 1 min 1.0.0", rel("1.0.0"), 0, ["1.0.0"], keep=1, minimum="1.0.0")
-select("5 select: semver, not text, order", rel("5.9.0", "5.10.0", "5.2.0"), 0, ["5.10.0", "5.9.0"])
-select("5b RED select: a release that is no JSON object is rc 2, not a traceback", "[1]", 2, red_case=True)
-select("5c RED select: --keep 0 is rc 2, not a traceback", rel("5.0.0"), 2, keep=0, red_case=True)
 
 # ---- fetch-releases, publish
 f = fixture("ok")
@@ -288,6 +264,79 @@ check("20 rehearse: rpms are verified against the rehearsal key set", p, 0,
       extra=lambda: "--keyset rehearsal --verify-only" in calls(f))
 
 homes = []
+# ---- select_tags, called directly: what publishing takes from the releases list
+import importlib.util
+
+# Loading the tool by path would write its bytecode beside the shared scripts.
+sys.dont_write_bytecode = True
+
+
+def load_tool(path):
+    spec = importlib.util.spec_from_file_location("pkg_repo_" + str(abs(hash(path))), path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def verdict(label, got, want, red_case=False):
+    global cases, red, failed
+    cases += 1
+    if got == want:
+        red += bool(red_case)
+        print(f"ok   {label}")
+    else:
+        failed = True
+        print(f"FAIL {label}: got {got!r}, want {want!r}")
+
+
+def raises(fn):
+    try:
+        fn()
+    except Exception as e:
+        return type(e).__name__
+    return None
+
+
+def rels(*rows):
+    return [dict(tag_name=t, prerelease=pre, draft=dr) for t, pre, dr in rows]
+
+
+def select_cases(mod, label_prefix, red_case):
+    sel = mod.select_tags
+    mixed = rels(("5.0.0", False, False), ("5.1.0-rc1", True, False), ("5.2.0", False, True),
+                 ("5.1.0", False, False), ("4.0.0", False, False))
+    return [
+        (f"{label_prefix}1 select_tags: newest first, prerelease, draft and below the minimum skipped",
+         sel(mixed, 10, "5.0.0"), ["5.1.0", "5.0.0"]),
+        (f"{label_prefix}2 select_tags: a prerelease with a valid tag is never selected",
+         sel(rels(("5.3.0", True, False)), 10, "5.0.0"), []),
+        (f"{label_prefix}3 select_tags: 5.10.0 sorts above 5.9.0, not as text",
+         sel(rels(("5.9.0", False, False), ("5.10.0", False, False)), 10, "5.0.0"), ["5.10.0", "5.9.0"]),
+        (f"{label_prefix}4 select_tags: --keep cuts the oldest",
+         sel(rels(("5.0.0", False, False), ("5.1.0", False, False), ("5.2.0", False, False)), 2, "5.0.0"),
+         ["5.2.0", "5.1.0"]),
+    ]
+
+
+tool_mod = load_tool(TOOL)
+for label, got, want in select_cases(tool_mod, "15d ", False):
+    verdict(label, got, want)
+verdict("15e RED select_tags: a bad --min is Cannot (rc 2)", raises(lambda: tool_mod.select_tags([], 1, "x")), "Cannot", True)
+verdict("15f RED select_tags: --keep 0 is Cannot (rc 2)", raises(lambda: tool_mod.select_tags([], 0, "5.0.0")), "Cannot", True)
+verdict("15g RED select_tags: a non-list is Cannot (rc 2)", raises(lambda: tool_mod.select_tags({}, 1, "5.0.0")), "Cannot", True)
+verdict("15h RED select_tags: a non-object entry is Cannot (rc 2)", raises(lambda: tool_mod.select_tags([1], 1, "5.0.0")), "Cannot", True)
+
+# The same cases over a copy with the prerelease/draft filter taken out must fail.
+src = open(TOOL).read()
+guard = '        if r.get("prerelease") or r.get("draft"):\n            continue\n'
+assert src.count(guard) == 1, "the filter moved; update this case"
+os.makedirs(os.path.join(root, "perturbed"), exist_ok=True)
+pert = os.path.join(root, "perturbed", "pkg-repo.py")
+write(pert, src.replace(guard, ""))
+broken = [(l, g == w) for l, g, w in select_cases(load_tool(pert), "", True)]
+verdict("15i RED select_tags: without the prerelease/draft filter the filter cases fail",
+        [ok for _, ok in broken][:2], [False, False], True)
+
 try:
     # ---- fetch-prev
     KEYS_DIR = os.path.join(HERE, "..", "keys")
@@ -486,7 +535,7 @@ try:
         if action == "pkg-repo":
             e.update({k: "" for k in ("STEP", "MODE", "KEYSET", "TREE", "RELEASES", "PREV", "KEY", "INSTALL_DIR",
                                       "PROBE_SLUGS", "PROBE_STEPS", "LIVE_URL", "SOURCES", "REMOTE_BASE",
-                                      "SSH_KEY", "KNOWN_HOSTS")})
+                                      "SSH_KEY")})
             e.update(CI_ROOT=os.path.join(HERE, ".."))
         else:
             e.update({k: "" for k in ("MODE", "PKGS", "KEY")})
@@ -734,9 +783,8 @@ try:
         return run(["sign-index", "--tree", tree_, "--keyset", keyset] + (["--key", key] if key else []))
 
 
-    def verify_tree(name, tree_, want=0, text=None, red_case=False, unsigned=False, now=None, env=None, extra=None):
+    def verify_tree(name, tree_, want=0, text=None, red_case=False, now=None, env=None, extra=None):
         argv = ["verify-tree", "--tree", tree_, "--keyset", "rehearsal"]
-        argv += ["--unsigned"] if unsigned else []
         argv += ["--now", str(now)] if now is not None else []
         before = calls(root)
         p = run(argv, dict(env or {}, FAKE_ROOT=root))
@@ -842,11 +890,7 @@ try:
                 extra=lambda asked: p.returncode == 0)
 
     t = build_site("vt-unsigned", signed=False, extras=True)
-    verify_tree("53 verify-tree --unsigned: an unsigned tree's hash chain is rc 0, no signature asked", t, unsigned=True,
-                extra=lambda asked: "sign " not in asked)
-    verify_tree("54 RED verify-tree: an unsigned tree without --unsigned is rc 1", t, 1, "InRelease", True)
-    flip(os.path.join(t, "deb/dists/trixie/main/binary-amd64/Packages.xz"), 3)
-    verify_tree("55 RED verify-tree --unsigned: a changed byte in Packages.xz is rc 1", t, 1, "Packages.xz", True, unsigned=True)
+    verify_tree("54 RED verify-tree: an unsigned tree is rc 1", t, 1, "InRelease", True)
 
     t = signed_tree("vt-alias")
     write(os.path.join(t, "librescrs-archive-keyring-trixie.deb"), b"not the indexed keyring")
@@ -877,14 +921,8 @@ try:
     os.makedirs(nogpgconf)
     for tool_ in ("gpg", "gpgv", "zstd", "bash", "ls"):
         os.symlink(shutil.which(tool_), os.path.join(nogpgconf, tool_))
-    tmp_empty, tmp_ro = os.path.join(root, "tmp-empty"), os.path.join(root, "tmp-ro")
+    tmp_empty = os.path.join(root, "tmp-empty")
     os.makedirs(tmp_empty)
-    os.makedirs(tmp_ro)
-    os.chmod(tmp_ro, 0o500)  # an --unsigned run makes no gpg home, so it needs no writable TMPDIR
-    t = build_site("vt-nogpgconf", signed=False, extras=True)
-    verify_tree("60 verify-tree --unsigned without gpgconf on PATH: rc 0, no gpg home made", t, unsigned=True,
-                env={"PATH": nogpgconf, "TMPDIR": tmp_ro}, extra=lambda asked: os.listdir(tmp_ro) == [])
-    os.chmod(tmp_ro, 0o700)
     verify_tree("60b verify-tree without gpgconf on PATH: the signed path is rc 0, not a traceback", st,
                 env={"PATH": nogpgconf, "TMPDIR": tmp_empty}, extra=lambda asked: os.listdir(tmp_empty) == [])
 

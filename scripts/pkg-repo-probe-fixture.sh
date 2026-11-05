@@ -44,7 +44,7 @@
 # (install/, packaging/) as a model; the publisher's probe always judges the
 # real ones, from that repository, never these.
 #
-# Every container step has a deadline (FX_TIMEOUT, default 1800 s): past it
+# Every container step has a deadline (1800 s): past it
 # the fixture cannot be built, and says which step.
 
 fx_scripts() {
@@ -174,11 +174,11 @@ fx_packages() {
     mkdir -p "$fx/deb" "$fx/rpm"
     d13="$("$here/pkg-images" get debian13)" || fatal "no debian13 image"
     echo "-- fixture: debs $v (keyring $k) in $fx"
-    timeout -s KILL "${FX_TIMEOUT:-1800}" docker run --rm --name "$tag-deb" -v "$fx:/w" -v "$work/deb.sh:/deb.sh:ro" -e "OWN=$own" -e "V=$v" -e "K=$k" \
+    timeout -s KILL 1800 docker run --rm --name "$tag-deb" -v "$fx:/w" -v "$work/deb.sh:/deb.sh:ro" -e "OWN=$own" -e "V=$v" -e "K=$k" \
         -e "VARIANTS=$variants" "$d13" bash /deb.sh >"$log" 2>&1 || fatal "the fixture debs do not build"
     for slug in fedora43 fedora44 opensusetw; do
         echo "-- fixture: rpms $v (release $k) for $slug in $fx"
-        timeout -s KILL "${FX_TIMEOUT:-1800}" docker run --rm --name "$tag-rpm-$slug" -v "$fx:/w" -v "$work/rpm.sh:/rpm.sh:ro" -e "OWN=$own" -e "SLUG=$slug" \
+        timeout -s KILL 1800 docker run --rm --name "$tag-rpm-$slug" -v "$fx:/w" -v "$work/rpm.sh:/rpm.sh:ro" -e "OWN=$own" -e "SLUG=$slug" \
             -e "V=$v" -e "K=$k" -e "VARIANTS=$variants" \
             -e "PKG_MANAGER=$("$here/pkg-images" manager "$slug")" "$("$here/pkg-images" get "$slug")" bash /rpm.sh >"$log" 2>&1 \
             || fatal "the fixture rpms for $slug do not build"
@@ -194,7 +194,7 @@ fx_sign() {
     for f in "$fx"/rpm/*/*.rpm; do fx_isvariant "$f" || command cp -f "$f" "$fx/sign/"; done
     for d in "$fx/sign" "$fx"/rpm/norec "$fx"/rpm/nopkgcheck "$fx"/rpm/noskip "$fx"/rpm/unreach; do
         [ -d "$d" ] || continue
-        timeout -k 60 "${FX_TIMEOUT:-1800}" "$ci/scripts/pkg-sign.sh" --dir "$d" --keyset rehearsal >"$log" 2>&1 \
+        timeout -k 60 1800 "$ci/scripts/pkg-sign.sh" --dir "$d" --keyset rehearsal >"$log" 2>&1 \
             || fatal "pkg-sign.sh cannot sign $d"
     done
     for f in "$fx"/rpm/*/*.rpm; do fx_isvariant "$f" || command cp -f "$fx/sign/$(basename "$f")" "$f"; done
@@ -226,9 +226,9 @@ fx_in() {
 fx_tree() {
     local ci="$1" in="$2" out="$3" prev="${4:-}"
     echo "-- fixture: tree $(basename "$out")${prev:+ (carrying $(basename "$prev"))}"
-    timeout -k 60 "${FX_TIMEOUT:-1800}" python3 -I "$ci/scripts/pkg-repo.py" assemble --in "$in" --out "$out" --now "$(date +%s)" \
+    timeout -k 60 1800 python3 -I "$ci/scripts/pkg-repo.py" assemble --in "$in" --out "$out" --now "$(date +%s)" \
         --valid-days 30 --keyset rehearsal ${prev:+--prev "$prev"} >"$log" 2>&1 || fatal "assemble of $out"
-    timeout -k 60 "${FX_TIMEOUT:-1800}" python3 -I "$ci/scripts/pkg-repo.py" sign-index --tree "$out" --keyset rehearsal >"$log" 2>&1 \
+    timeout -k 60 1800 python3 -I "$ci/scripts/pkg-repo.py" sign-index --tree "$out" --keyset rehearsal >"$log" 2>&1 \
         || fatal "sign-index of $out"
 }
 

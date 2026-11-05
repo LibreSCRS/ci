@@ -78,7 +78,7 @@
 # argument that is no option, a host.tld/... or IPv4 word; any other is a finding.
 #
 # Every client pass has a deadline (PROBE_PASS_TIMEOUT, default 1200 s) and the
-# server one to come up (PROBE_SERVER_TIMEOUT, default 300 s); past either the
+# server one to come up (300 s); past either the
 # probe cannot judge, and names the pass.
 #
 # The network: a Docker network of this run's own, a throwaway CA made here
@@ -97,8 +97,7 @@
 #
 # Environment: PKG_DOCKER as pkg-gate.sh; PROBE_KEEP_IMAGE_DEFAULTS and
 # PROBE_NO_ZYPPER_WRAPPER are handed to the clients (pkg-repo-probe-inside.sh);
-# PROBE_OLDSIGS_TIMEOUT (default 1200 s) bounds key's check of the old
-# signatures.
+# key's check of the old signatures is bounded at 1200 s.
 #
 # Exit codes: 0 every pass green, 1 a finding, 2 cannot judge.
 set -uo pipefail
@@ -239,8 +238,8 @@ probe_up() {
         "$PROBE_SERVER_IMAGE" bash -c 'dnf -y -q install python3 >/dev/null && exec python3 -I /server.py /www "$0"' \
         "$PROBE_STAGED" >/dev/null || return 2
     # up once it answers at all (tree A of a test need not hold KEY.asc),
-    # within PROBE_SERVER_TIMEOUT seconds
-    local start=$SECONDS limit="${PROBE_SERVER_TIMEOUT:-300}"
+    # within 300 seconds
+    local start=$SECONDS limit=300
     while [ $((SECONDS - start)) -lt "$limit" ]; do
         [ "$("$DOCKER" inspect -f '{{.State.Running}}' "$PROBE_TAG-server" 2>/dev/null)" = true ] || break
         if [ "$(probe_srv_curl --max-time 5 -o /dev/null -w '%{http_code}' "$PROBE_BASE" 2>/dev/null)" != 000 ]; then
@@ -589,7 +588,7 @@ probe_generation() {
     if [ "$step" = key ]; then
         rc=0
         # TERM first: it reaches pkg-sign.sh, whose trap removes its containers
-        local limit="${PROBE_OLDSIGS_TIMEOUT:-1200}"
+        local limit=1200
         timeout -k 60 "$limit" python3 -I -B -c "$(probe_helper_py)" "$PROBE_HERE" oldsigs "$prev" "$tree" "$PROBE_KEYSET" \
             "$PROBE_WORK" || rc=$?
         case "$rc" in

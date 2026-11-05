@@ -24,8 +24,7 @@
 #   PROBE_TREE_INDEX           upgrade, key: sha256 of the tree's InRelease (apt)
 #                              or repomd.xml (rpm) for this slug
 #   PROBE_PASS_TIMEOUT         upgrade, key: the host's deadline for the pass;
-#                              the wait for the tree ends PROBE_SYNC_MARGIN
-#                              (default 300) seconds before it
+#                              the wait for the tree ends 300 seconds before it
 # Mounted: /probe/ca.pem (the probe's CA), /probe/install.txt (the
 # first-contact file, byte for byte as published); upgrade and key:
 # /probe/sync, where the client says "ready" once it has installed from the
@@ -360,9 +359,9 @@ holds_index() {
 generation() {
     local p v w lib=librescrs-middleware keyring=librescrs-release bad=0
     # the host kills the pass PROBE_PASS_TIMEOUT seconds after it started; the
-    # wait for the tree ends PROBE_SYNC_MARGIN seconds before that, which the
+    # wait for the tree ends 300 seconds before that, which the
     # upgrade itself then has
-    local limit=$(( ${PROBE_PASS_TIMEOUT:-1200} - ${PROBE_SYNC_MARGIN:-300} ))
+    local limit=$(( ${PROBE_PASS_TIMEOUT:-1200} - 300 ))
     P=P3; [ "$STEP" = upgrade ] || P=P5
     UPWHY=""
     [ "$MANAGER" != apt ] || { lib=liblibrescrs5; keyring=librescrs-archive-keyring; }

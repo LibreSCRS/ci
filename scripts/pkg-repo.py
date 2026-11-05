@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 """pkg-repo.py -- the publisher of the LibreSCRS package repositories.
 
-  select          which release tags a repository tree is built from
   fetch-releases  download each release and verify it: the exact asset set
                   against the repository's ci/release-assets.txt, provenance
                   through release-seal.sh verify-release, and the RPM
@@ -60,8 +59,7 @@ S_IDX_FPR), the hash chain Release -> Packages* -> pool and by-hash, repomd.xml
 -> the files it names -> the rpms primary names, repomd.xml.key and KEY.asc
 being the key set's certificate; and further Valid-Until later than --now, the
 stable aliases being packages an index names, and the rpm signatures through
-pkg-sign.sh --verify-only. --unsigned judges the hash chain of a tree not yet
-signed and no signature at all.
+pkg-sign.sh --verify-only.
 
   PKG_REPO_INDEX  pkg-repo-index.sh        (default: next to this script)
 
@@ -137,29 +135,6 @@ def select_tags(releases, keep, minimum):
     return [t for _, t in found[:keep]]
 
 
-def cmd_select(a):
-    try:
-        with open(a.releases) if a.releases != "-" else sys.stdin as f:
-            data = json.load(f)
-    except (OSError, ValueError) as e:
-        print(f"pkg-repo: cannot read the releases: {e} -- cannot judge", file=sys.stderr)
-        return 2
-    try:
-        tags = select_tags(data, a.keep, a.min)
-    except Cannot as e:
-        print(f"pkg-repo: {e} -- cannot judge", file=sys.stderr)
-        return 2
-    except Exception as e:  # nothing unexpected is a pass, and none is a finding
-        print(f"::error::select: unexpected {type(e).__name__}: {e} -- cannot judge")
-        return 2
-    if not tags:
-        print(f"::error::no release tag >= {a.min} (not a prerelease or draft)", file=sys.stderr)
-        return 1
-    print("\n".join(tags))
-    return 0
-
-
-# ------------------------------------------------------------------ fetch --
 def gh_cmd():
     return shlex.split(os.environ.get("PKG_REPO_GH", "gh"))
 
@@ -816,21 +791,16 @@ def valid_until(text, now, what):
 
 
 def fetch_deb(m, sg, codename, work, inrelease=None, now=None):
-    """The signed chain of one codename; with sg None (a tree not yet signed)
-    the chain of its Release alone. now judges Valid-Until. Returns the
+    """The signed chain of one codename. now judges Valid-Until. Returns the
     SHA256 of every package Packages names."""
     base = f"deb/dists/{codename}"
-    if sg:
-        what = f"{base}/InRelease"
-        dst = m.put(what, m.need(what) if inrelease is None else inrelease)
-        out = os.path.join(work, f"release-{codename}")
-        sg.verify(dst, output=out, what=what)
-        with open(out, "rb") as f:
-            signed = f.read()
-        text = signed.decode("utf-8")
-    else:
-        what = f"{base}/Release"
-        text = m.need(what).decode("utf-8")
+    what = f"{base}/InRelease"
+    dst = m.put(what, m.need(what) if inrelease is None else inrelease)
+    out = os.path.join(work, f"release-{codename}")
+    sg.verify(dst, output=out, what=what)
+    with open(out, "rb") as f:
+        signed = f.read()
+    text = signed.decode("utf-8")
     entries = parse_release(text)
     if not entries:
         raise Finding(f"{what} names no file")
@@ -840,13 +810,12 @@ def fetch_deb(m, sg, codename, work, inrelease=None, now=None):
     rel_path = m.put(f"{base}/Release", m.need(f"{base}/Release"))
     with open(rel_path, encoding="utf-8") as f:
         rel_text = f.read()
-    if sg:
-        sg.verify(m.put(f"{base}/Release.gpg", m.need(f"{base}/Release.gpg")), rel_path, what=f"{base}/Release.gpg")
-        if sorted(parse_release(rel_text)) != sorted(entries):
-            raise Finding(f"{base}/Release does not name what InRelease names")
-        with open(rel_path, "rb") as f:
-            if f.read() != signed:
-                raise Finding(f"{base}/InRelease does not sign exactly the bytes of {base}/Release")
+    sg.verify(m.put(f"{base}/Release.gpg", m.need(f"{base}/Release.gpg")), rel_path, what=f"{base}/Release.gpg")
+    if sorted(parse_release(rel_text)) != sorted(entries):
+        raise Finding(f"{base}/Release does not name what InRelease names")
+    with open(rel_path, "rb") as f:
+        if f.read() != signed:
+            raise Finding(f"{base}/InRelease does not sign exactly the bytes of {base}/Release")
     if now is not None:
         valid_until(text, now, what)
         valid_until(rel_text, now, f"{base}/Release")
@@ -897,8 +866,7 @@ def checksum_of(el, ns):
 
 
 def fetch_rpm(m, sg, slug, cert_bytes, required=False):
-    """The signed chain of one slug (sg None: unsigned, the chain alone).
-    Returns {path: sha256 or None} of every rpm primary names."""
+    """The signed chain of one slug. Returns {path: sha256 or None} of every rpm primary names."""
     base = f"rpm/{slug}"
     try:
         repomd = m.get(f"{base}/repodata/repomd.xml")
@@ -908,9 +876,8 @@ def fetch_rpm(m, sg, slug, cert_bytes, required=False):
         print(f"::warning::{slug}: no repomd.xml on the site, not mirrored")
         return {}
     md = m.put(f"{base}/repodata/repomd.xml", repomd)
-    if sg:
-        sg.verify(m.put(f"{base}/repodata/repomd.xml.asc", m.need(f"{base}/repodata/repomd.xml.asc")), md,
-                  what=f"{base}/repodata/repomd.xml.asc")
+    sg.verify(m.put(f"{base}/repodata/repomd.xml.asc", m.need(f"{base}/repodata/repomd.xml.asc")), md,
+              what=f"{base}/repodata/repomd.xml.asc")
     if m.need(f"{base}/repodata/repomd.xml.key") != cert_bytes:
         raise Finding(f"{base}/repodata/repomd.xml.key is not the key set's certificate")
     m.put(f"{base}/repodata/repomd.xml.key", cert_bytes)
@@ -1150,8 +1117,8 @@ def cmd_verify_tree(a):
         cert, _ = keyset_env(a.keyset)
         with open(cert, "rb") as f:
             cert_bytes = f.read()
-        home = None if a.unsigned else gpg_home()
-        sg = None if a.unsigned else Signer(a.keyset, home)
+        home = gpg_home()
+        sg = Signer(a.keyset, home)
         m = Tree(tree_)
         named = {}
         for c in CODENAMES:
@@ -1161,9 +1128,6 @@ def cmd_verify_tree(a):
         if m.need("KEY.asc") != cert_bytes:
             raise Finding("KEY.asc is not the key set's certificate")
         check_aliases(m, named)
-        if a.unsigned:
-            print(f"pkg-repo: the hash chain of {m.count} files holds (unsigned: no signature judged)")
-            return 0
         # Every rpm primary names, wherever it lies, and every rpm at the top of
         # the slug (a carried one no current index names); pkg-sign.sh takes the
         # slug from <stem>.<slug>.rpm.
@@ -1269,11 +1233,6 @@ def write_index_html(out, codenames, slugs):
 def main(argv):
     ap = argparse.ArgumentParser(prog="pkg-repo.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("select")
-    s.add_argument("--releases", required=True, help="gh api releases JSON file, or - for stdin")
-    s.add_argument("--keep", type=int, required=True)
-    s.add_argument("--min", required=True)
-    s.set_defaults(fn=cmd_select)
     f = sub.add_parser("fetch-releases")
     f.add_argument("--out", required=True)
     f.add_argument("--mode", choices=("publish", "rehearse"), required=True)
@@ -1301,7 +1260,6 @@ def main(argv):
     t = sub.add_parser("verify-tree")
     t.add_argument("--tree", required=True)
     t.add_argument("--keyset", choices=("rehearsal", "package-signing"), required=True)
-    t.add_argument("--unsigned", action="store_true", help="the hash chain only, of a tree not yet signed")
     t.add_argument("--now", type=int, default=None, help="epoch seconds (default: the clock)")
     t.set_defaults(fn=cmd_verify_tree)
     w = sub.add_parser("watch")
