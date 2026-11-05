@@ -82,7 +82,7 @@ cat >"$A/CMakeLists.txt" <<'EOF'
 cmake_minimum_required(VERSION 3.24)
 project(LibreAgent LANGUAGES NONE)
 set(_s "")
-foreach(_x CORE WIRE CLIENT_QT CLIENT_QT_TEST_SUPPORT PKCS11_FACADE PKCS11_SOCKET_CLIENT TEST_SUPPORT)
+foreach(_x CORE CLIENT_QT CLIENT_QT_TEST_SUPPORT PKCS11_FACADE PKCS11_SOCKET_CLIENT TEST_SUPPORT)
     if(LIBREAGENT_BUILD_${_x})
         string(APPEND _s "${_x} ")
     endif()
@@ -116,9 +116,9 @@ switches() { tr -s ' ' <"$W/b/_deps/agent-switches.txt" 2>/dev/null | sed 's/ $/
 src=(-DFETCHCONTENT_SOURCE_DIR_LIBREAGENT="$A")
 
 C="$W/c1"; consumer "$C" ON ClientQt
-configure "$C" "${src[@]}"; want "F1 ClientQt from source: the Qt client and the wire, nothing else" "WIRE CLIENT_QT" "$(switches)"
+configure "$C" "${src[@]}"; want "F1 ClientQt from source: the Qt client, nothing else" "CLIENT_QT" "$(switches)"
 C="$W/c2"; consumer "$C" ON Pkcs11SocketClient TestSupport
-configure "$C" "${src[@]}"; want "F2 the socket client brings the wire and the facade" "WIRE PKCS11_FACADE PKCS11_SOCKET_CLIENT TEST_SUPPORT" "$(switches)"
+configure "$C" "${src[@]}"; want "F2 the socket client brings the facade" "PKCS11_FACADE PKCS11_SOCKET_CLIENT TEST_SUPPORT" "$(switches)"
 C="$W/c3"; consumer "$C" OFF Core Wire
 configure "$C" -DCMAKE_PREFIX_PATH="$W/prefix"; want "F3 installed: this major, exactly the components" "5 Core;Wire" "$(cat "$W/b/agent-found.txt" 2>/dev/null)"
 C="$W/c4"; consumer "$C" ON Core

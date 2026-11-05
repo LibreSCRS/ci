@@ -36,8 +36,7 @@
 # toplevel of the current directory) -- never this script's location, which on
 # a runner is the shared-gates checkout. Every relative path below (VERSION,
 # CHANGELOG.md, CMakeLists.txt, ci/version-surfaces.txt) is read there.
-# Inputs, as before: CHANGELOG_FILE, VERSION_FILE, SURFACE_LIST, CMAKE,
-# LIBRESCRS_FLOOR_MAJOR.
+# Inputs: CMAKE, LIBRESCRS_FLOOR_MAJOR.
 #
 # Exit: 0 every arm run agrees - 1 at least one arm found a disagreement
 #       2 no arm found a disagreement and at least one could not measure --
@@ -228,6 +227,10 @@ set -u
 
 [ "${BASH_VERSINFO[0]:-0}" -ge 4 ] || { echo "check-version: needs bash >= 4 -- cannot judge" >&2; exit 2; }
 
+CHANGELOG=CHANGELOG.md
+VERSION_FILE=VERSION
+SURFACE_LIST=ci/version-surfaces.txt
+
 usage() {
     echo "usage: check-version.sh [--version <v>] [--arms lockstep,floors,stamp,surfaces,modules] [--min <n>] [--verbose]" >&2
     echo "       check-version.sh --section <v>" >&2
@@ -271,8 +274,6 @@ arm_lockstep() {
 MODE=$1
 VER=${2#v}
 [ -n "$VER" ] || { echo "check-version lockstep: no version to check (VERSION empty and no --version)" >&2; exit 2; }
-CHANGELOG=${CHANGELOG_FILE:-CHANGELOG.md}
-VERSION_FILE=${VERSION_FILE:-VERSION}
 
 FAIL=0
 
@@ -335,7 +336,6 @@ exit "$FAIL"
 # arm_floors <check|list>
 arm_floors() {
 MODE=$1
-VERSION_FILE=${VERSION_FILE:-VERSION}
 WANT=""
 MAP=""
 for tok in $(printf '%s' "${LIBRESCRS_FLOOR_MAJOR:-}" | tr ',' ' '); do
@@ -509,7 +509,6 @@ END {
 
 # --------------------------------------------------------------- stamp arm --
 arm_stamp() {
-VERSION_FILE=${VERSION_FILE:-VERSION}
 FILE_VER="$(head -n1 "$VERSION_FILE" 2>/dev/null | tr -d '[:space:]')"
 FILE_VER=${FILE_VER#v}
 WANT="$(printf '%s' "$FILE_VER" | sed -n 's/^\([0-9][0-9]*\).*$/\1/p')"
@@ -591,8 +590,6 @@ exit "$rc"
 
 # ------------------------------------------------------------ surfaces arm --
 arm_surfaces() {
-VERSION_FILE=${VERSION_FILE:-VERSION}
-SURFACE_LIST=${SURFACE_LIST:-ci/version-surfaces.txt}
 CMAKE=${CMAKE:-cmake}
 
 undecidable() {   # rc=2 is "I could not judge" -- never "pass"
@@ -879,7 +876,7 @@ case "$TOP" in
 esac
 
 VER="$VER_ARG"
-[ -n "$VER" ] || VER="$(head -n1 "${VERSION_FILE:-VERSION}" 2>/dev/null | tr -d '[:space:]')"
+[ -n "$VER" ] || VER="$(head -n1 "$VERSION_FILE" 2>/dev/null | tr -d '[:space:]')"
 
 seen=","
 IFS=, read -r -a want_arms <<< "$ARMS"

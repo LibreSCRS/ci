@@ -72,8 +72,7 @@
 #
 # Environment: LIBRESCRS_ROOT (the directory holding the nine clones side by
 # side; --root wins; default: the parent of this script's checkout),
-# EXPECTED_FPR (the release key's primary fingerprint), RELEASE_TRAIN_ORG
-# (default LibreSCRS), BUMP_DEPS (default: bump-deps beside this script),
+# EXPECTED_FPR (the release key's primary fingerprint), BUMP_DEPS (default: bump-deps beside this script),
 # RELEASE_TRAIN_POLL (seconds between polls, default 15),
 # RELEASE_TRAIN_WAIT (seconds to wait for a run to appear, default 600),
 # SITE_URL_EN / SITE_URL_SR (the two download pages), PACKAGES_URL (the
@@ -97,7 +96,7 @@ set -uo pipefail
 [ "${BASH_VERSINFO[0]:-0}" -ge 4 ] || { echo "release-train: needs bash >= 4" >&2; exit 2; }
 
 here="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
-ORG="${RELEASE_TRAIN_ORG:-LibreSCRS}"
+ORG=LibreSCRS
 EXPECTED_FPR="${EXPECTED_FPR:-6B05889AC9A6A7188DF639B06F27A989C2031D16}"
 BUMP_DEPS="${BUMP_DEPS:-$here/bump-deps}"
 POLL="${RELEASE_TRAIN_POLL:-15}"

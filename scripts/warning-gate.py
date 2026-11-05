@@ -55,42 +55,31 @@ The anti-vacuum rule has one failure mode of its own: when the tree LOSES
 compile units, the recorded floor becomes unreachable and every healthy full
 build is refused with a message that blames the build ("this is an incremental
 build, not a measurement") instead of the stale number. So the floor is held
-against the compile edges the CONFIGURED graph holds (build.ninja): --floor asks
-only that, before anything is built, and --check asks it too whenever the tree
-has a build.ninja -- an unreachable floor is then a failure (1) that names both
+against the compile edges the CONFIGURED graph holds (build.ninja): --check asks
+that, before anything is scored, whenever the tree has a build.ninja -- an unreachable floor is then a failure (1) that names both
 numbers, never a refusal (2) that blames the log. The floor and the counts are
 read from one section, chosen by one function, so they cannot disagree.
 
 Usage:
-  warning-gate.py --check [--require-key] [--leg <name>] <build.log> --build-dir <dir>
-  warning-gate.py --update [--leg <name>] <build.log> --build-dir <dir>
-  warning-gate.py --floor [--leg <name>] --build-dir <dir>
+  warning-gate.py --check [--require-key] <build.log> --build-dir <dir>
+  warning-gate.py --update <build.log> --build-dir <dir>
 
 The repository judged is REPO_ROOT, else $GITHUB_WORKSPACE, else the git
 checkout around the current directory -- never the one this script lives in.
 Its baseline is <root>/ci/warning-baseline.json, and relative paths given on
 the command line are read from <root>.
 
---leg is for a workflow that builds one compiler in more than one configuration
-(a matrix): each configuration compiles a different set of units, so each gets
-its own section, keyed `<compiler>/<leg>`. Without it the key is the compiler
-alone. There is no fallback from one to the other: a union of two legs would let
-each leg carry the other's diagnostics, and a leg with no section of its own is
-not judged by somebody else's.
-
 --require-key is for CI: without it an unknown compiler key is reported and the
 run passes, which is how this check came to judge nothing at all on a runner
 whose compiler the baseline had never seen.
 
 Exit codes:
-  0  at or below the baseline for this compiler in both partitions (--floor:
-     the recorded floor is reachable)
+  0  at or below the baseline for this compiler in both partitions
   1  a category grew, appeared, or a system category has no recorded reason;
      or --require-key was given and this compiler has no baseline; or the
      floor is above the configured graph, or is 0 (the rule disarmed)
   2  refusing to judge: no repository, no baseline, no build dir, a log that is
-     not a measurement, a tagged diagnostic with no location to resolve, or
-     (--floor) no build.ninja, no compile edges, no section for this key
+     not a measurement, or a tagged diagnostic with no location to resolve
 """
 import argparse
 import json
@@ -147,28 +136,13 @@ def compiler_facts(build):
     return cid, ver
 
 
-def compiler_key(build: Path):
+def baseline_key(build: Path):
     if not (build / "CMakeCache.txt").is_file():
         fatal(f"no CMakeCache.txt in {build} — that is not a configured build tree")
     cid, ver = compiler_facts(build)
     if not cid:
         fatal(f"{build} names no CMAKE_CXX_COMPILER_ID — that is not a configured build tree")
     return f"{cid}-{(ver or '0').split('.')[0]}"
-
-
-LEG_NAME = re.compile(r"[A-Za-z0-9_.-]+")
-
-
-def baseline_key(build: Path, leg=None):
-    """The baseline section a build tree is judged by: the compiler's key, and
-    `/<leg>` after it when the workflow names one. The floor rule asks this
-    same function, so the floor and the counts come from one section."""
-    key = compiler_key(build)
-    if leg is None:
-        return key
-    if not LEG_NAME.fullmatch(leg):
-        fatal(f"--leg '{leg}' is not a leg name (letters, digits, '_', '.', '-')")
-    return f"{key}/{leg}"
 
 
 # A frame is anything in the block that names a file and a line. Every shape GCC
@@ -356,46 +330,20 @@ def floor_verdict(key, floor, edges, build):
     return 0, lines
 
 
-def floor_only(build, leg, baseline):
-    """--floor: the recorded floor against the configured graph, and nothing else."""
-    if not baseline.is_file():
-        fatal(f"no baseline at {BASELINE_REL}")
-    if not (build / "build.ninja").is_file():
-        fatal(f"no {build}/build.ninja (Ninja generator required)")
-    key = baseline_key(build, leg)          # exits 2 if unconfigured
-    base = json.loads(baseline.read_text())
-    sect = section(base, key)
-    if sect is None:
-        fatal(f"{BASELINE_REL} has no section for {key}, the key {build} is judged by")
-    rc, lines = floor_verdict(key, compile_unit_floor(base, sect),
-                              configured_edges(build), build)
-    for ln in lines:
-        print(ln, file=sys.stderr if rc else sys.stdout)
-    return rc
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--update", action="store_true")
-    ap.add_argument("--floor", action="store_true",
-                    help="judge only the recorded floor against the configured "
-                         "graph; takes no log")
     ap.add_argument("--require-key", action="store_true",
                     help="a compiler the baseline has never seen is a failure, "
                          "not a report; for CI, where the alternative is a check "
                          "that judges nothing")
-    ap.add_argument("--leg", default=None,
-                    help="the workflow leg this tree was built for; judged by the "
-                         "section <compiler>/<leg> instead of <compiler>")
     ap.add_argument("--build-dir", required=True)
     ap.add_argument("log", nargs="?")
     args = ap.parse_args()
-    if sum((args.check, args.update, args.floor)) != 1 or \
-            (args.floor and args.log is not None) or \
-            (not args.floor and args.log is None):
+    if sum((args.check, args.update)) != 1 or args.log is None:
         print("warning-gate: FATAL: usage: warning-gate.py --check|--update <build.log> "
-              "--build-dir <dir>  |  --floor --build-dir <dir>", file=sys.stderr)
+              "--build-dir <dir>", file=sys.stderr)
         return 2
 
     root = repo_root()
@@ -404,9 +352,7 @@ def main():
     build = Path(args.build_dir)
     if not build.is_dir():
         fatal(f"build dir '{build}' not found")
-    if args.floor:
-        return floor_only(build, args.leg, baseline)
-    key = baseline_key(build, args.leg)
+    key = baseline_key(build)
     counts, seen_reasons, units, unresolvable = scan(Path(args.log), build, root)
 
     if unresolvable:

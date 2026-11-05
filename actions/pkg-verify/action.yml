@@ -32,10 +32,6 @@ inputs:
       Anything else is a directory list to lint.
     required: false
     default: own
-  name:
-    description: "Repository whose packages lint=own and hook mean (default: the repository part of github.repository)."
-    required: false
-    default: ''
   hook:
     description: >
       Optional script (a path relative to the workspace, or absolute) with the
@@ -57,7 +53,6 @@ runs:
         IN_PACKAGES: ${{ inputs.packages }}
         IN_REPORT: ${{ inputs.report }}
         IN_LINT: ${{ inputs.lint }}
-        IN_NAME: ${{ inputs.name }}
         IN_HOOK: ${{ inputs.hook }}
         GH_REPOSITORY: ${{ github.repository }}
       run: |
@@ -67,7 +62,7 @@ runs:
         case "$IN_LINT" in
           all) ;;
           own)
-            name="${IN_NAME:-${GH_REPOSITORY#*/}}"
+            name="${GH_REPOSITORY#*/}"
             for d in $IN_PACKAGES; do
               [ ! -d "$d/$name" ] || args+=(--lint "$d/$name")
             done
@@ -80,7 +75,7 @@ runs:
         esac
         if [ -n "$IN_HOOK" ]; then
           case "$IN_HOOK" in /*) hook="$IN_HOOK" ;; *) hook="$GITHUB_WORKSPACE/$IN_HOOK" ;; esac
-          args+=(--hook "$hook" --name "${IN_NAME:-${GH_REPOSITORY#*/}}")
+          args+=(--hook "$hook" --name "${GH_REPOSITORY#*/}")
         fi
         report="${IN_REPORT:-$RUNNER_TEMP/pkg-verify-report-$IN_SLUG}"
         args+=(--report "$report")

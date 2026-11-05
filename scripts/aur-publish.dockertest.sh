@@ -133,8 +133,7 @@ mk() {
 pkg='package() { :; }'
 fns() { local f=""; for p in "$@"; do f+="package_$p() { :; }"$'\n'; done; printf '%s' "$f"; }
 mk /w/p LibreMiddleware 'pkgname=librescrs-middleware' \
-    'git+https://github.com/LibreSCRS/LibreMiddleware.git#tag=$pkgver?signed' SKIP "$pkg" \
-    '--p11kit-option LIBREMIDDLEWARE_INSTALL_P11KIT_MODULE'
+    'git+https://github.com/LibreSCRS/LibreMiddleware.git#tag=$pkgver?signed' SKIP "$pkg" ''
 mk /w/p LibreAgent "$(printf '%s\n' 'pkgbase=libreagent' "pkgname=('librescrs-agent-common' 'librescrs-agent-core')" '_srcname=LibreAgent')" \
     '$_srcname::git+https://github.com/LibreSCRS/LibreAgent.git#tag=$pkgver?signed qcbor-$_qcbor_commit.tar.gz::file:///fix/qcbor-$_qcbor_commit.tar.gz' \
     "SKIP $qsum" "$(fns librescrs-agent-common librescrs-agent-core)" \

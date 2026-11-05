@@ -10,7 +10,7 @@ passed.
 
 Usage:
   run-gates.py --gates "G1 G2 ..." [--root DIR] [--repo NAME] [--build-dir D]
-               [--build-log F] [--warning-leg W] [--floor FILE]
+               [--build-log F] [--floor FILE]
                [--recipe-args "..."] [--deleter-args "..."]
 
 The repository judged is --root, else REPO_ROOT, else $GITHUB_WORKSPACE, else
@@ -44,7 +44,7 @@ class Cannot(Exception):
 GATES = {
     "check-skip-reasons": ("bash4", "check-skip-reasons.sh", lambda c: [], ()),
     # The Arch recipe builds this repository's signed tag; repository-specific
-    # options (--pin, --srcname, --p11kit-option) come through --recipe-args.
+    # options (--pin, --srcname) come through --recipe-args.
     "check-recipe": ("bash4", "check-recipe",
                      lambda c: ["--root", c["root"], "--repo", c["repo"]]
                      + shlex.split(c["recipe_args"]), ()),
@@ -74,9 +74,8 @@ GATES = {
                    lambda c: (["--floor", c["floor"]] if c["floor"] else []) + [c["build_dir"]],
                    ("build_dir",)),
     "warning-gate": ("python", "warning-gate.py",
-                     lambda c: ["--check", "--require-key"]
-                     + (["--leg", c["warning_leg"]] if c["warning_leg"] else [])
-                     + [c["build_log"], "--build-dir", c["build_dir"]],
+                     lambda c: ["--check", "--require-key", c["build_log"],
+                                "--build-dir", c["build_dir"]],
                      ("build_dir", "build_log")),
 }
 
@@ -115,7 +114,6 @@ def main(argv):
     ap.add_argument("--repo", default=None, help="the consumer's repository name")
     ap.add_argument("--build-dir", default="")
     ap.add_argument("--build-log", default="")
-    ap.add_argument("--warning-leg", default="", help="warning-baseline leg")
     ap.add_argument("--floor", default="", help="test-floor file (default ci/test-floor.txt)")
     ap.add_argument("--recipe-args", default="", help="extra check-recipe options")
     ap.add_argument("--deleter-args", default="", help="check-cleansing-deleters options")
@@ -135,7 +133,7 @@ def main(argv):
         repo = (args.repo or os.environ.get("GITHUB_REPOSITORY", "").rpartition("/")[2]
                 or os.path.basename(root))
         ctx = {"root": root, "repo": repo, "build_dir": args.build_dir,
-               "build_log": args.build_log, "warning_leg": args.warning_leg,
+               "build_log": args.build_log,
                "floor": args.floor, "recipe_args": args.recipe_args,
                "deleter_args": args.deleter_args}
         missing = sorted({INPUT_FLAG[i] for g in gates for i in GATES[g][3] if not ctx[i]})

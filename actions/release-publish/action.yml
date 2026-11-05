@@ -7,7 +7,7 @@ description: >
   workflow artefact and the same read-back run over a listing synthesized from
   it.
 
-# Contract. The caller's job checks its repository out into `repo-root` (the
+# Contract. The caller's job checks its repository out into the workspace (the
 # CHANGELOG and ci/release-assets.txt are read there) and, when it publishes
 # assets, downloads the sealed directory into `artifacts`. Linux runner; the
 # job carries the timeout. Permissions: contents: write on a tag (read is
@@ -28,10 +28,6 @@ inputs:
       only; its ci/release-assets.txt must then declare no glob.
     required: false
     default: artifacts
-  repo-root:
-    description: The consumer's checkout.
-    required: false
-    default: ${{ github.workspace }}
 
 runs:
   using: composite
@@ -43,7 +39,7 @@ runs:
         MODE: ${{ inputs.mode }}
         WANT: ${{ inputs.version }}
         WANT_PRE: ${{ inputs.is_prerelease }}
-        REPO_ROOT: ${{ inputs.repo-root }}
+        REPO_ROOT: ${{ github.workspace }}
       run: |
         set -euo pipefail
         # A composite action does not enforce `required: true`: an input the
@@ -60,7 +56,7 @@ runs:
     - name: Release notes from the CHANGELOG
       shell: bash
       env:
-        REPO_ROOT: ${{ inputs.repo-root }}
+        REPO_ROOT: ${{ github.workspace }}
         VERSION: ${{ inputs.version }}
         PRE: ${{ inputs.is_prerelease }}
       run: |
@@ -81,7 +77,7 @@ runs:
     - name: The staged asset set is the set this repository declares
       shell: bash
       env:
-        REPO_ROOT: ${{ inputs.repo-root }}
+        REPO_ROOT: ${{ github.workspace }}
         ARTIFACTS: ${{ inputs.artifacts }}
       run: |
         set -uo pipefail
@@ -121,7 +117,7 @@ runs:
       env:
         GH_TOKEN: ${{ github.token }}
         TAG: ${{ steps.ctx.outputs.tag }}
-        REPO_ROOT: ${{ inputs.repo-root }}
+        REPO_ROOT: ${{ github.workspace }}
       run: '"$GITHUB_ACTION_PATH/../../scripts/check-release-assets.sh" --published-strict "$TAG"'
 
     - name: Keep the rehearsed asset set
@@ -137,7 +133,7 @@ runs:
       if: inputs.mode == 'rehearse'
       shell: bash
       env:
-        REPO_ROOT: ${{ inputs.repo-root }}
+        REPO_ROOT: ${{ github.workspace }}
         ARTIFACTS: ${{ inputs.artifacts }}
         VERSION: ${{ inputs.version }}
       run: |

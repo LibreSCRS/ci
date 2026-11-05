@@ -61,8 +61,8 @@ ISSUER=https://token.actions.githubusercontent.com
 KEYLESS_FIXTURES="${KEYLESS_FIXTURES:-LibreSCRS/LibreMiddleware 4.2.0 librescrs-pkcs11-4.2.0-linux-x86_64.tar.gz
 LibreSCRS/LibreCelik 4.2.0 LibreCelik-4.2.0-macos.dmg}"
 ATTEST_FIXTURE="${ATTEST_FIXTURE:-cli/cli v2.100.0 gh_2.100.0_linux_arm64.tar.gz deployment.yml refs/heads/trunk}"
-SITE_REPO="${SITE_REPO:-LibreSCRS/LibreSCRS.github.io}"
-SITE_POLICY_PATH="${SITE_POLICY_PATH:-content/security/_index.md}"
+SITE_REPO=LibreSCRS/LibreSCRS.github.io
+SITE_POLICY_PATH=content/security/_index.md
 
 cannot() { echo "FATAL: $* -- cannot judge" >&2; exit 2; }
 usage() {
@@ -176,14 +176,11 @@ seal() {
 
 # ------------------------------------------------------- the site's policy --
 site_regex() {
-    local page="${SITE_POLICY_FILE:-}"
-    if [ -z "$page" ]; then
-        need gh
-        page="$work/site-policy.md"
-        gh api "repos/$SITE_REPO/contents/$SITE_POLICY_PATH" --jq .content 2>/dev/null \
-            | { base64 -d 2>/dev/null || base64 -D; } > "$page" \
-            || cannot "could not read $SITE_POLICY_PATH from $SITE_REPO"
-    fi
+    local page="$work/site-policy.md"
+    need gh
+    gh api "repos/$SITE_REPO/contents/$SITE_POLICY_PATH" --jq .content 2>/dev/null \
+        | { base64 -d 2>/dev/null || base64 -D; } > "$page" \
+        || cannot "could not read $SITE_POLICY_PATH from $SITE_REPO"
     sed -n "s/.*--certificate-identity-regexp '\([^']*\)'.*/\1/p" "$page" | head -n 1
 }
 

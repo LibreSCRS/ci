@@ -29,31 +29,8 @@ Cases:
   16  the one-dimensional baseline is read as ours          -> 0
   17  a tagged diagnostic with no location                  -> 2
   18  --require-key on an unknown compiler                  -> 1
-  19  --leg picks its own section, not a sibling leg's      -> 0 / 1
-  20  a leg with no section is not judged by the plain key  -> 1
-  21  --update --leg writes that leg only                   -> 0, sibling untouched
-  22  a leg name that is not a name                         -> 2
 
-Cases 19-22 fail against the gate as it was before --leg existed: it refused
-the flag, so it could only ever judge a whole matrix by one compiler section.
-
-The floor (--floor, and inside --check). These were the separate floor check's
-cases, kept one for one when it became a mode of this gate:
-  F1  floor below the graph is reachable, and the slack is named   -> 0
-  F2  floor equal to the graph                                     -> 0
-  F3  floor above the graph, both numbers named                    -> 1
-  F4  a zero floor                                                 -> 1
-  F5  no baseline                                                  -> 2
-  F6  no build.ninja                                               -> 2
-  F7  a graph with no compile edges                                -> 2
-  F8  the per-compiler layout --update writes is read              -> 0
-  F9  a GCC 13 tree is judged by GNU-13, not GNU-16                -> 0
-  F10 a GCC 16 tree over the same file, on the GNU-16 floor        -> 1
-  F11 a compiler with no section                                   -> 2
-  F12 the older top-level floor, unreachable                       -> 1
-  F13 an unconfigured tree                                         -> 2
-  F14 --leg picks its own floor (native green, both red)           -> 0 / 1
-  F15 a leg with no section is not judged by the plain key         -> 2
+The floor, judged inside --check:
   F16 --check over an unreachable floor fails and names the floor,
       instead of refusing the log and blaming the build            -> 1
   F17 --check with a floor of 0                                    -> 1
@@ -133,21 +110,6 @@ def ninja(root, edges, build="build"):
     text = "".join(f"build x{i}.o: CXX_COMPILER__t_unscanned ../s{i}.cpp\n"
                    for i in range(edges))
     (b / "build.ninja").write_text(text + "build all: phony x0.o\n")
-
-
-def floor_repo(name, floor, edges, ver="13.2.0", baseline=None):
-    """The floor check's fixture: a tree configured by GCC <ver>, and the
-    layout --update writes (the floor inside that compiler's section) unless a
-    whole baseline is given. NONE leaves the baseline or the graph out."""
-    r = make_repo(name, ("GNU", ver))
-    if baseline is not None:
-        (r / "ci" / "warning-baseline.json").write_text(baseline + "\n")
-    elif floor != "NONE":
-        write_baseline(r, {f"GNU-{ver.split('.')[0]}": {
-            "min_compile_units": floor, "project": {}, "system": {}, "system_reasons": {}}})
-    if edges != "NONE":
-        ninja(r, edges)
-    return r
 
 
 def write_baseline(root, obj):
@@ -316,83 +278,6 @@ try:
     make_log(r / "ci.log", 620, W)
     rc, out = run(r, "--check", "--require-key", str(r / "ci.log"))
     check(18, 1, rc, "requires one" in out, out)
-
-    # --- legs ------------------------------------------------------------
-    # Two legs of one compiler, each with its own counts. The `both` leg
-    # compiles more sources and carries six more -Wcomment than `native`; a
-    # section shared by the two would let native grow by those six unseen.
-    def legs():
-        sect = lambda n: {"min_compile_units": 620, "project": {"-Wcomment": n},
-                          "system": {}, "system_reasons": {}}
-        return {"GNU-16/native": sect(30), "GNU-16/both": sect(36)}
-    W36 = W + W[:6]
-
-    # 19: each leg is judged by its own section
-    r = make_repo("c19"); write_baseline(r, legs()); make_log(r / "both.log", 620, W36)
-    rc, out = run(r, "--check", "--require-key", "--leg", "both", str(r / "both.log"))
-    check("19a", 0, rc, "GNU-16/both baseline" in out, out)
-    rc, out = run(r, "--check", "--require-key", "--leg", "native", str(r / "both.log"))
-    check("19b", 1, rc, "-Wcomment: 36 ours, baseline 30" in out, out)
-
-    # 20: no section for the leg is a failure under --require-key, even though
-    # the plain compiler key would have matched
-    r = make_repo("c20"); write_baseline(r, partitioned()); make_log(r / "ci.log", 620, W)
-    rc, out = run(r, "--check", "--require-key", "--leg", "both", str(r / "ci.log"))
-    check(20, 1, rc, "GNU-16/both is not in the baseline" in out, out)
-
-    # 21: --update --leg records that leg and leaves its sibling alone
-    r = make_repo("c21"); write_baseline(r, legs()); make_log(r / "b.log", 620, W36 + W[:1])
-    rc, out = run(r, "--update", "--leg", "both", str(r / "b.log"))
-    got = json.loads((r / "ci" / "warning-baseline.json").read_text())
-    check(21, 0, rc, got["GNU-16/both"]["project"] == {"-Wcomment": 37}
-          and got["GNU-16/native"] == legs()["GNU-16/native"] and "GNU-16" not in got, out)
-
-    # 22: a leg name that could not be a key is refused, not joined into one
-    r = make_repo("c22"); write_baseline(r, legs()); make_log(r / "x.log", 620, W)
-    rc, out = run(r, "--check", "--leg", "a b", str(r / "x.log"))
-    check(22, 2, rc, "is not a leg name" in out, out)
-
-    # --- the floor --------------------------------------------------------
-    r = floor_repo("f1", 100, 111); rc, out = run(r, "--floor")
-    check("F1", 0, rc, "floor is 11 low" in out, out)
-    r = floor_repo("f2", 111, 111); rc, out = run(r, "--floor")
-    check("F2", 0, rc, "GNU-13 min_compile_units=111 is reachable" in out, out)
-    r = floor_repo("f3", 122, 111); rc, out = run(r, "--floor")
-    check("F3", 1, rc, "min_compile_units=122" in out and "only 111 compile edges" in out, out)
-    r = floor_repo("f4", 0, 111); rc, out = run(r, "--floor")
-    check("F4", 1, rc, "anti-vacuum rule is disarmed" in out, out)
-    r = floor_repo("f5", "NONE", 111); rc, out = run(r, "--floor")
-    check("F5", 2, rc, "no baseline" in out, out)
-    r = floor_repo("f6", 111, "NONE"); rc, out = run(r, "--floor")
-    check("F6", 2, rc, "build.ninja" in out, out)
-    r = floor_repo("f7", 111, 0); rc, out = run(r, "--floor")
-    check("F7", 2, rc, "no compile edges" in out, out)
-    r = floor_repo("f8", 111, 111); rc, out = run(r, "--floor")
-    check("F8", 0, rc, "GNU-13 min_compile_units=111 is reachable" in out, out)
-    two = ('{"GNU-13": {"min_compile_units": 100, "project": {}, "system": {}, "system_reasons": {}},'
-           ' "GNU-16": {"min_compile_units": 400, "project": {}, "system": {}, "system_reasons": {}}}')
-    r = floor_repo("f9", None, 111, "13.2.0", two); rc, out = run(r, "--floor")
-    check("F9", 0, rc, "GNU-13 min_compile_units=100 is reachable" in out, out)
-    r = floor_repo("f10", None, 111, "16.1.1", two); rc, out = run(r, "--floor")
-    check("F10", 1, rc, "GNU-16 min_compile_units=400" in out and "only 111 compile edges" in out, out)
-    r = floor_repo("f11", None, 111, "14.2.0", '{"GNU-13": {"min_compile_units": 100}}')
-    rc, out = run(r, "--floor")
-    check("F11", 2, rc, "no section for GNU-14" in out, out)
-    r = floor_repo("f12", None, 111, "13.2.0", '{"GNU-13": {"-Wcomment": 3}, "min_compile_units": 122}')
-    rc, out = run(r, "--floor")
-    check("F12", 1, rc, "GNU-13 min_compile_units=122" in out, out)
-    r = floor_repo("f13", 111, 111); (r / "build" / "CMakeCache.txt").unlink()
-    rc, out = run(r, "--floor")
-    check("F13", 2, rc, "not a configured build tree" in out, out)
-    legs2 = ('{"GNU-13/native": {"min_compile_units": 366, "project": {}, "system": {}, "system_reasons": {}},'
-             ' "GNU-13/both": {"min_compile_units": 371, "project": {}, "system": {}, "system_reasons": {}}}')
-    r = floor_repo("f14", None, 368, "13.2.0", legs2)
-    rc, out = run(r, "--floor", "--leg", "native")
-    check("F14a", 0, rc, "GNU-13/native min_compile_units=366 is reachable" in out, out)
-    rc, out = run(r, "--floor", "--leg", "both")
-    check("F14b", 1, rc, "GNU-13/both min_compile_units=371" in out, out)
-    r = floor_repo("f15", 100, 111); rc, out = run(r, "--floor", "--leg", "both")
-    check("F15", 2, rc, "no section for GNU-13/both" in out, out)
 
     # F16: the same stale floor under --check is named, not blamed on the log
     r = make_repo("f16"); write_baseline(r, partitioned(units=900)); ninja(r, 700)

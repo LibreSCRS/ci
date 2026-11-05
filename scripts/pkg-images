@@ -9,7 +9,6 @@
 #   pkg-images family <slug>     print deb | rpm | arch
 #   pkg-images ext <slug>        print the package file extension: deb | rpm |
 #                                pkg.tar.zst
-#   pkg-images slugs             print every slug, one per line
 #   pkg-images tool-image <name> print <repository>:<tag>@sha256:<digest> of a
 #                                tool container (never a distribution slug)
 #   pkg-images add tool-image <name> <repository>:<tag>
@@ -21,7 +20,7 @@
 #                                registry and rewrite the lock
 #
 # `arch` is a pseudo-slug for the Arch recipes: the AUR publishes recipes, not
-# packages, so it is no distribution slug and `slugs` never lists it. A
+# packages, so it is no distribution slug. A
 # package build (pkg-gate.sh) for it runs in the archlinux tool image, with
 # manager pacman and family arch.
 #
@@ -194,10 +193,9 @@ case "$cmd" in
     ext)     [ $# -eq 1 ] || die2 "usage: ext <slug>"
              m="$(image_row "$1" | awk '{ print $2 }')" || exit 2
              case "$m" in apt) echo deb ;; dnf|zypper) echo rpm ;; pacman) echo pkg.tar.zst ;; *) die2 "manager '$m'" ;; esac ;;
-    slugs)   rows image | awk '{ print $2 }' ;;
     tool-image) [ $# -eq 1 ] || die2 "usage: tool-image <name>"; tool_image_row "$1" | awk '{ print $2 }' ;;
     add)     cmd_add "$@" ;;
     check)   cmd_check ;;
     refresh) cmd_refresh "$@" ;;
-    *) die2 "usage: pkg-images get|manager|family|ext|slugs|tool-image|add|check|refresh" ;;
+    *) die2 "usage: pkg-images get|manager|family|ext|tool-image|add|check|refresh" ;;
 esac

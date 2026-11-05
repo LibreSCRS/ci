@@ -46,7 +46,7 @@ mut "short digest is red"            's/^(image debian13 .*@sha256:[0-9a-f]{63})
 mut "tag without digest is red"      's/^(image fedora43 +dnf +[^@]+)@sha256:[0-9a-f]+/\1/'
 mut "unknown manager is red"         's/^(image fedora44 +)dnf/\1yum/'
 mut "duplicate slug is red"          's/^image ubuntu2604 /image debian13 /'
-mut "unknown row kind is red"        's/^image leap160 /img leap160 /'
+mut "unknown row kind is red"        's/^image opensusetw /img opensusetw /'
 # The AppImage tool rows went with the AppImage; one left behind is not a pass.
 zeros="$(printf '0%.0s' $(seq 64))"
 mut "a tool row is red"              "\$a tool appimagetool 1.9.1 https://example.invalid/1.9.1/a $zeros"
@@ -91,7 +91,6 @@ tl() { PKG_IMAGES_LOCK="$work/tl" "$tool" "$@" >"$work/out" 2>"$work/err"; }
 tilock "tool-image archlinux $ti_ref"
 tl check; expect "a lock with a tool-image row is well-formed" 0 $?
 tl tool-image archlinux; rc=$?; [ "$(cat "$work/out")" = "$ti_ref" ]; expect "tool-image prints the ref" "0 0" "$rc $?"
-tl slugs; ! grep -q archlinux "$work/out"; expect "slugs never prints a tool-image" 0 $?
 tl get archlinux; expect "get does not answer for a tool-image" 2 $?
 tl tool-image nema; expect "unknown tool-image cannot be judged" 2 $?
 # the arch pseudo-slug: the Arch recipes build in the archlinux tool image
@@ -100,7 +99,6 @@ tl manager arch; rc=$?; [ "$(cat "$work/out")" = pacman ]; expect "... with pacm
 tl family arch; rc=$?; [ "$(cat "$work/out")" = arch ]; expect "... and family arch" "0 0" "$rc $?"
 tl ext arch; rc=$?; [ "$(cat "$work/out")" = pkg.tar.zst ]; expect "... whose packages are .pkg.tar.zst" "0 0" "$rc $?"
 tl ext debian13; rc=$?; [ "$(cat "$work/out")" = deb ]; expect "a deb slug's packages are .deb" "0 0" "$rc $?"
-tl slugs; ! grep -qx arch "$work/out"; expect "slugs never prints the arch pseudo-slug" 0 $?
 tilock
 tl get arch; expect "the arch pseudo-slug without the archlinux tool image cannot be judged" 2 $?
 tilock "tool-image archlinux docker.io/library/archlinux:base-devel"

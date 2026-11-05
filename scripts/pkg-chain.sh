@@ -6,13 +6,13 @@
 #
 # Usage:
 #   pkg-chain.sh build --slug S --art DIR --upstream source|release
-#                [--version V] [--root DIR] [--name NAME] [--ref NAME=REF]...
+#                [--version V] [--root DIR] [--name NAME]
 #                [--dist DIR]
 #   pkg-chain.sh fetch --repo OWNER/NAME --version V --pattern GLOB --into DIR
 #
 # build:
 #   upstream=source   every upstream in the deps.lock closure is checked out at
-#                     its locked commit (or at --ref) and built for the same
+#                     its locked commit and built for the same
 #                     slug, bottom up, before the consumer. An upstream already
 #                     built from that commit under DIR is reused, so a chain of
 #                     consumers sharing DIR builds the bottom once.
@@ -78,13 +78,12 @@ cmd_fetch() {
 
 cmd_build() {
     local slug="" art="" mode="" ver="" root="" name="" dist=""
-    local refs=()
     while [ $# -gt 0 ]; do
         case "$1" in
             --slug) slug="$2"; shift 2 ;; --art) art="$2"; shift 2 ;;
             --upstream) mode="$2"; shift 2 ;; --version) ver="$2"; shift 2 ;;
             --root) root="$2"; shift 2 ;; --name) name="$2"; shift 2 ;;
-            --ref) refs+=(--ref "$2"); shift 2 ;; --dist) dist="$2"; shift 2 ;;
+            --dist) dist="$2"; shift 2 ;;
             *) die 2 "build: unknown argument $1" ;;
         esac
     done
@@ -94,7 +93,6 @@ cmd_build() {
         release) [ -n "$ver" ] || die 2 "build: upstream=release needs --version" ;;
         *) die 2 "build: --upstream must be source or release" ;;
     esac
-    [ "$mode" = source ] || [ "${#refs[@]}" -eq 0 ] || die 2 "build: --ref only makes sense with upstream=source"
     [ -n "$root" ] || root="${REPO_ROOT:-${GITHUB_WORKSPACE:-}}"
     [ -n "$root" ] || root="$(git rev-parse --show-toplevel 2>/dev/null)" || die 2 "no root"
     root="$(cd "$root" && pwd)" || die 2 "root $root"
@@ -110,7 +108,7 @@ cmd_build() {
     art="$(cd "$art" && pwd)" || die 2 "art $art"
 
     local rows rc up url sha repo
-    rows="$("$here/pkg-deps.sh" closure --root "$root" "${refs[@]}")"; rc=$?
+    rows="$("$here/pkg-deps.sh" closure --root "$root")"; rc=$?
     [ "$rc" -eq 0 ] || { echo "pkg-chain: the upstream closure of $name cannot be built (rc=$rc)"; return "$rc"; }
     echo "== pkg-chain $name on $slug, upstream=$mode"
     [ -n "$rows" ] && printf '%s\n' "$rows" | sed 's/^/   upstream /' || echo "   no upstream"

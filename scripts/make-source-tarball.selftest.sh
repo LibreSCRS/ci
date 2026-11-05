@@ -78,13 +78,7 @@ cmp -s "$T" "$W/o2/pkg_5.0.0.orig.tar.gz" && pass "same commit, another second a
 tar -tvzf "$T" | awk '{print $1, $2}' | sort -u >"$W/modes"
 grep -qvE '^(-rw-r--r--|drwxr-xr-x|-rwxr-xr-x|lrwxr-xr-x) 0/0$' "$W/modes" && flunk "modes normalised, owner 0/0" || pass "modes normalised, owner 0/0"
 
-# --- options ---------------------------------------------------------------
-mkdir -p "$W/o3"
-run --root "$R" --name pkg --out "$W/o3" --submodules no --exclude extra --version 9.9.9
-members "$W/o3/pkg_9.9.9.orig.tar.gz" >"$W/m3" 2>/dev/null
-if [ "$rc" = 0 ] && ! grep -q 'thirdparty/sub/file.c' "$W/m3" && ! grep -q '/extra/' "$W/m3" && grep -qx 'Pkg-9.9.9/' "$W/m3"; then
-  pass "--submodules no, --exclude and --version act"
-else flunk "--submodules no, --exclude and --version act"; fi
+# --- environment -----------------------------------------------------------
 mkdir -p "$W/o4"
 GITHUB_REPOSITORY=LibreSCRS/Named REPO_ROOT="$R" run --name pkg --out "$W/o4"
 members "$W/o4/pkg_5.0.0.orig.tar.gz" >"$W/m4" 2>/dev/null
@@ -105,8 +99,8 @@ run --root "$W/nover" --name pkg --out "$W/o5"
 red "no VERSION cannot be judged" 2 "no VERSION"
 run --root "$R" --out "$W/o5"
 red "no --name is a usage error" 2 "usage:"
-run --root "$R" --name pkg --submodules maybe
-red "--submodules takes yes or no" 2 "usage:"
+run --root "$R" --name pkg --submodules no
+red "an option the tool does not have is a usage error" 2 "usage:"
 run --root "$W/does-not-exist" --name pkg
 red "no repository cannot be judged" 2 "no repository"
 

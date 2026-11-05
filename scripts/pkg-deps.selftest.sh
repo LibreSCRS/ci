@@ -64,11 +64,6 @@ consumer "LM $U/LM $M2
 LA $U/LA $A1"
 run closure --root "$work/c"; expect "one upstream at two commits is red" 1 $?
 
-# --ref replaces the lock with the branch head -- and the diamond goes away
-# when both paths resolve to the same head
-run closure --root "$work/c" --ref LM=main; rc=$?
-grep -q "^LM $U/LM $M2$" "$work/out"; expect "--ref LM=main takes upstream main for every path" "0 0" "$rc $?"
-
 # malformed rows
 consumer "LM $U/LM $M1 main"
 run closure --root "$work/c"; expect "a fourth column (the old format) is red" 1 $?

@@ -68,15 +68,9 @@ outputs:
   libredarwin-path:
     description: Absolute path of the LibreDarwin checkout (empty when not asked for).
     value: ${{ steps.paths.outputs.libredarwin-path }}
-  libredarwin-sha:
-    description: The LibreDarwin commit from deps.lock.
-    value: ${{ steps.resolve.outputs.libredarwin-sha }}
   librecelik-path:
     description: Absolute path of the LibreCelik checkout (empty when not asked for).
     value: ${{ steps.paths.outputs.librecelik-path }}
-  librecelik-sha:
-    description: The LibreCelik commit from deps.lock.
-    value: ${{ steps.resolve.outputs.librecelik-sha }}
 
 runs:
   using: composite

@@ -23,7 +23,7 @@
 # copied back only when every rpm of that slug verified; files a container
 # wrote are handed back to the caller's uid through the same image.
 #
-# Environment: PKG_DOCKER, PKG_DOCKER_NETWORK as pkg-gate.sh.
+# Environment: PKG_DOCKER as pkg-gate.sh.
 #
 # Exit codes: 0 every rpm verified, 1 one did not (or did not sign), 2 cannot
 # judge (bad usage, unknown key set or slug, no rpm, docker missing, a key or
@@ -73,8 +73,6 @@ SIGNER="${fpr[S_RPM_FPR]}"
 
 DOCKER="${PKG_DOCKER:-docker}"
 command -v "$DOCKER" >/dev/null 2>&1 || die2 "$DOCKER is not on PATH"
-NET=()
-[ -z "${PKG_DOCKER_NETWORK:-}" ] || NET=(--network "$PKG_DOCKER_NETWORK")
 
 # Group the rpms by slug; an unknown slug or a non-rpm one cannot be judged.
 declare -A group=() image=() manager=()
@@ -124,7 +122,7 @@ for s in $(printf '%s\n' "${!group[@]}" | sort); do
     last_image="${image[$s]}"
     # In the background and waited for, so a signal reaches the trap at once
     # instead of after the container finishes.
-    "$DOCKER" run --rm --name "$cname-$s" "${NET[@]}" -v "$st:/p" -v "$k:/k:ro" -v "$here:/ci-scripts:ro" \
+    "$DOCKER" run --rm --name "$cname-$s" -v "$st:/p" -v "$k:/k:ro" -v "$here:/ci-scripts:ro" \
         -e "MODE=$MODE" -e "PKG_MANAGER=${manager[$s]}" -e CERT=/k/cert.asc -e "SIGNER=$SIGNER" "${keyenv[@]}" \
         "${image[$s]}" bash /ci-scripts/pkg-sign-inside.sh &
     wait "$!"

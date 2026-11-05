@@ -3,13 +3,12 @@
 # pkg-deps.sh -- the upstream closure a package build needs, from deps.lock.
 #
 # Usage:
-#   pkg-deps.sh closure [--root DIR] [--ref NAME=REF]...
+#   pkg-deps.sh closure [--root DIR]
 #       Print "<name> <url> <commit40>" for every upstream the
 #       consumer at DIR builds against, TRANSITIVELY (a consumer's lock lists
 #       only what it builds from source; LibreCelik locks LibreAgent, whose own
 #       lock at that commit brings LibreMiddleware), dependencies before the
-#       repositories that need them. --ref replaces a locked commit with the
-#       current commit of REF at the same URL (a manual build against a branch).
+#       repositories that need them.
 #   pkg-deps.sh checkout <url> <commit40> <dest>
 #       A clean tree of that commit, submodules included, at DEST.
 #
@@ -64,21 +63,11 @@ lock_at() {
     git -C "$g" show "$2:deps.lock" 2>/dev/null || true
 }
 
-resolve_ref() {  # resolve_ref URL REF -> commit40
-    local sha
-    [[ "$2" =~ ^[0-9a-f]{40}$ ]] && { printf '%s\n' "$2"; return 0; }
-    sha="$(git ls-remote "$1" "$2" "refs/heads/$2" "refs/tags/$2^{}" 2>/dev/null | awk 'NR==1{print $1}')"
-    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 2
-    printf '%s\n' "$sha"
-}
-
 cmd_closure() {
     local root=""
-    local -A over=()
     while [ $# -gt 0 ]; do
         case "$1" in
             --root) root="$2"; shift 2 ;;
-            --ref) [[ "$2" == *=* ]] || die 2 "--ref wants NAME=REF"; over["${2%%=*}"]="${2#*=}"; shift 2 ;;
             *) die 2 "closure: unknown argument $1" ;;
         esac
     done
@@ -113,20 +102,12 @@ cmd_closure() {
     }
     add() {  # add NAME URL SHA FROM
         local s2="$3"
-        if [ -n "${over[$1]+x}" ]; then
-            s2="${ovsha[$1]:-}"
-            if [ -z "$s2" ]; then
-                s2="$(resolve_ref "$2" "${over[$1]}")" || { echo "pkg-deps: cannot resolve $1 ref ${over[$1]} at $2" >&2; return 2; }
-                ovsha[$1]="$s2"
-            fi
-        fi
         if [ -n "${sha[$1]+x}" ] && [ "${sha[$1]}" != "$s2" ]; then
             echo "pkg-deps: $1 is locked at ${sha[$1]:0:12} and at ${s2:0:12} (from $4) -- one closure, one commit" >&2
             return 1
         fi
         sha[$1]="$s2"; url[$1]="$2"
     }
-    local -A ovsha=()
     rows="$(parse_lock "$root/deps.lock" deps.lock)" || { [ "$own" = 1 ] && rm -rf "$CACHE"; return 1; }
     local rc=0
     while read -r name u s; do
@@ -159,5 +140,5 @@ cmd_checkout() {
 case "$cmd" in
     closure) cmd_closure "$@" ;;
     checkout) cmd_checkout "$@" ;;
-    *) die 2 "usage: pkg-deps.sh closure [--root DIR] [--ref NAME=REF]... | checkout <url> <sha> <dest>" ;;
+    *) die 2 "usage: pkg-deps.sh closure [--root DIR] | checkout <url> <sha> <dest>" ;;
 esac

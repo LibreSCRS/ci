@@ -77,24 +77,12 @@ inputs:
     description: 'probe: the probe steps, e.g. "p1p2 forge" or "upgrade key" (empty: p1p2)'
     required: false
     default: ''
-  live-url:
-    description: 'fetch-prev: the published site'
-    required: false
-    default: 'https://librescrs.github.io/packages'
   sources:
     description: 'aur: one checkout per repository at its release tag'
     required: false
     default: ''
-  remote-base:
-    description: 'aur: <remote-base>/<pkgbase>.git is the AUR repository'
-    required: false
-    default: 'ssh://aur@aur.archlinux.org'
   ssh-key:
     description: 'aur: the AUR SSH key (private)'
-    required: false
-    default: ''
-  known-hosts:
-    description: "aur: the AUR host keys (empty: keys/aur-known-hosts of this action's checkout)"
     required: false
     default: ''
 outputs:
@@ -120,11 +108,10 @@ runs:
         INSTALL_DIR: ${{ inputs.install-dir }}
         PROBE_SLUGS: ${{ inputs.slugs }}
         PROBE_STEPS: ${{ inputs.steps }}
-        LIVE_URL: ${{ inputs.live-url }}
+        LIVE_URL: https://librescrs.github.io/packages
         SOURCES: ${{ inputs.sources }}
-        REMOTE_BASE: ${{ inputs.remote-base }}
+        REMOTE_BASE: ssh://aur@aur.archlinux.org
         SSH_KEY: ${{ inputs.ssh-key }}
-        KNOWN_HOSTS: ${{ inputs.known-hosts }}
       run: |
         set -uo pipefail
         s="$CI_ROOT/scripts"
@@ -229,7 +216,7 @@ runs:
             args=(--sources /src --remote-base "$REMOTE_BASE")
             if [ -n "$ssh_key" ]; then
               ( umask 077; printf '%s\n' "$ssh_key" > "$sec/ssh-key" ) || exit 2
-              command cp -f "${KNOWN_HOSTS:-$CI_ROOT/keys/aur-known-hosts}" "$sec/known_hosts" || exit 2
+              command cp -f "$CI_ROOT/keys/aur-known-hosts" "$sec/known_hosts" || exit 2
               args+=(--ssh-key /k/ssh-key --known-hosts /k/known_hosts)
             fi
             # aur-publish.sh runs as root in the image and hands the work to

@@ -22,8 +22,7 @@
 # of the working directory. NAME: --name, else the root's directory name.
 # Upstreams: the first column of pkg-deps.sh closure over the root's deps.lock.
 #
-# Environment: PKG_DOCKER (default docker), PKG_DOCKER_NETWORK (docker run
-# --network, default unset), PKG_DOCKER_ADD_HOST (space-separated HOST:IP, each
+# Environment: PKG_DOCKER (default docker), PKG_DOCKER_ADD_HOST (space-separated HOST:IP, each
 # a docker run --add-host: a fixture pins github.com to loopback so a build
 # that escapes its local source fails instead of fetching the real one),
 # PKG_JOBS (build parallelism, default 2).
@@ -54,7 +53,6 @@ ROOT="$(cd "$ROOT" && pwd)" || exit 2
 DOCKER="${PKG_DOCKER:-docker}"
 command -v "$DOCKER" >/dev/null 2>&1 || { echo "pkg-gate: $DOCKER is not on PATH -- cannot judge" >&2; exit 2; }
 NET=()
-[ -z "${PKG_DOCKER_NETWORK:-}" ] || NET=(--network "$PKG_DOCKER_NETWORK")
 for h in ${PKG_DOCKER_ADD_HOST:-}; do NET+=(--add-host "$h"); done
 
 IMAGE="$("$here/pkg-images" get "$SLUG")" || exit 2

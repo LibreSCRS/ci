@@ -29,7 +29,7 @@
 # rpmlint read deb/rpm only). --report keeps the raw logs (default: a
 # temporary directory that is removed); --accepted defaults to this
 # repository's lint-accepted/.
-# Environment: PKG_DOCKER, PKG_DOCKER_NETWORK as pkg-gate.sh.
+# Environment: PKG_DOCKER as pkg-gate.sh.
 #
 # Exit codes: 0 the stack is green, 1 a check or the lint judgement failed,
 # 2 cannot judge (unknown slug, no docker, no package, lint not judgeable).
@@ -53,8 +53,6 @@ done
 [ -n "$slug" ] && [ "${#dirs[@]}" -gt 0 ] || { echo "usage: pkg-verify.sh --slug S --packages DIR..." >&2; exit 2; }
 DOCKER="${PKG_DOCKER:-docker}"
 command -v "$DOCKER" >/dev/null 2>&1 || { echo "pkg-verify: $DOCKER is not on PATH -- cannot judge" >&2; exit 2; }
-NET=()
-[ -z "${PKG_DOCKER_NETWORK:-}" ] || NET=(--network "$PKG_DOCKER_NETWORK")
 image="$("$here/pkg-images" get "$slug")" || exit 2
 manager="$("$here/pkg-images" manager "$slug")" || exit 2
 family="$("$here/pkg-images" family "$slug")" || exit 2
@@ -104,7 +102,7 @@ if [ "${#lintdirs[@]}" -gt 0 ]; then
     echo "   lint scope: $(wc -l <"$report/lint-files.txt") package(s) under ${lintdirs[*]}"
 fi
 echo "== pkg-verify $slug ($manager): $n package(s) from ${#dirs[@]} director(ies)"
-"$DOCKER" run --rm "${NET[@]}" "${mounts[@]}" -v "$here:/ci-scripts:ro" -v "$report:/report" "${hookargs[@]}" \
+"$DOCKER" run --rm "${mounts[@]}" -v "$here:/ci-scripts:ro" -v "$report:/report" "${hookargs[@]}" \
     -e PKG_MANAGER="$manager" -e PKG_SLUG="$slug" "$image" bash /ci-scripts/pkg-verify-inside.sh
 irc=$?
 

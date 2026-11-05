@@ -131,7 +131,6 @@ expect "release: an upstream release without this slug is red" 1 $?
 rm -rf "$work/art"; STUB_ASSETS="lm_5.0.0-1_amd64.debian13.deb lm-dbgsym_5.0.0-1_amd64.debian13.deb" chain --upstream release --version 5.0.0
 expect "release: an upstream release carrying a debug package is red" 1 $?
 chain --upstream release; expect "release without a version cannot be judged" 2 $?
-chain --upstream release --version 5.0.0 --ref LibreMiddleware=main; expect "--ref with release cannot be judged" 2 $?
 chain --upstream tarball; expect "an unknown upstream mode cannot be judged" 2 $?
 
 # fetch on its own

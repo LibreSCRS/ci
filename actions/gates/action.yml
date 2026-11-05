@@ -19,7 +19,7 @@ description: >-
 # Known gates: check-cleansing-deleters (deleter-args), check-recipe (recipe-args),
 # check-skip-reasons, check-workflows, selftests, check-version,
 # check-version-lockstep, deps-lock, deps-lock-build (build-dir), test-floor
-# (build-dir, floor), warning-gate (build-dir, build-log, warning-leg).
+# (build-dir, floor), warning-gate (build-dir, build-log).
 #
 # A composite step carries no timeout-minutes of its own: the calling job's
 # bound is the bound. Needs python3 (PyYAML for check-workflows) and bash 4 or
@@ -45,12 +45,6 @@ inputs:
     default: ''
   build-log:
     description: The full build log warning-gate judges, relative to the consumer root.
-    required: false
-    default: ''
-  warning-leg:
-    description: >-
-      The warning-baseline section's leg (<compiler>/<leg>), for a matrix that
-      builds one compiler more than one way. Empty judges by the compiler alone.
     required: false
     default: ''
   floor:
@@ -81,7 +75,6 @@ runs:
         GATES_ROOT: ${{ inputs.root }}
         GATES_BUILD_DIR: ${{ inputs.build-dir }}
         GATES_BUILD_LOG: ${{ inputs.build-log }}
-        GATES_WARNING_LEG: ${{ inputs.warning-leg }}
         GATES_FLOOR: ${{ inputs.floor }}
         GATES_RECIPE_ARGS: ${{ inputs.recipe-args }}
         GATES_DELETER_ARGS: ${{ inputs.deleter-args }}
@@ -91,7 +84,6 @@ runs:
           --root "$GATES_ROOT" \
           --build-dir "$GATES_BUILD_DIR" \
           --build-log "$GATES_BUILD_LOG" \
-          --warning-leg "$GATES_WARNING_LEG" \
           --floor "$GATES_FLOOR" \
           --recipe-args="$GATES_RECIPE_ARGS" \
           --deleter-args="$GATES_DELETER_ARGS"

@@ -24,7 +24,7 @@ SUB=01346829096c61b372692f6dc43ffa778c6caccd
 SUM=0da68ac55f6e67c67e57f4fe4603b850713ce2b0ac95fb76094f446139db4d57
 
 # fixture <name>: a consumer "Pkg" whose recipe passes every rule with the flags FLAGS.
-FLAGS=(--repo Pkg --srcname 'Pkg-$pkgver' --pin _qcbor_commit=cmake/FetchQCBOR.cmake --p11kit-option PKG_INSTALL_P11KIT)
+FLAGS=(--repo Pkg --srcname 'Pkg-$pkgver' --pin _qcbor_commit=cmake/FetchQCBOR.cmake)
 fixture() {
   local d="$W/$1"
   mkdir -p "$d/packaging/arch" "$d/cmake"
@@ -83,7 +83,7 @@ check() {
 
 d=$(fixture control)
 check "control: every rule green, every rule says what it measured" 0 "check-recipe: Pkg GREEN" "$d" "${FLAGS[@]}"
-if ! { grep -q '^pins: _qcbor_commit=' "$W/out" && grep -q '^p11kit: no registration' "$W/out" \
+if ! { grep -q '^pins: _qcbor_commit=' "$W/out" \
   && grep -q '^trust: 1 VCS source(s) at SKIP, 1 download(s)' "$W/out"; }; then
   echo "FAIL  control does not report every rule"; fails=1
 fi
@@ -136,14 +136,6 @@ d=$(fixture gitsum); edit "$d" "s/^sha256sums=('SKIP'/sha256sums=('$SUM'/"
 check "trust: a sum on the git source" 1 "makepkg refuses a sum there" "$d" "${FLAGS[@]}"
 d=$(fixture short); edit "$d" "/^            '$SUM')/d"; edit "$d" "s/^sha256sums=('SKIP'/sha256sums=('SKIP')/"
 check "trust: one sum short" 1 "pairs them by position" "$d" "${FLAGS[@]}"
-
-# --- p11kit ---
-d=$(fixture readme); echo 'The module is registered in /usr/share/p11-kit/modules/pkg.module.' >>"$d/packaging/arch/README.md"
-check "p11kit: README names a registration not installed" 1 "README.md:3 names share/p11-kit/modules" "$d" "${FLAGS[@]}"
-d=$(fixture optdep); edit "$d" "s/^optdepends=('pcsclite: smart card access')/optdepends=('pcsclite: smart card access' 'p11-kit: card discovery')/"
-check "p11kit: optdepends offers p11-kit" 1 "optdepends offers p11-kit" "$d" "${FLAGS[@]}"
-d=$(fixture on); echo 'See /usr/share/p11-kit/modules/pkg.module.' >>"$d/packaging/arch/README.md"; edit "$d" 's/cmake -B build/cmake -DPKG_INSTALL_P11KIT=ON -B build/'
-check "p11kit: described AND installed is true" 0 "describing it is true" "$d" "${FLAGS[@]}"
 
 # --- cannot judge ---
 d=$(fixture nokeys); rm "$d/KEYS"

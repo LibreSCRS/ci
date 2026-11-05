@@ -109,20 +109,23 @@ expect "12 test-floor gets the build dir" 0 "$?" "alpha_tests: 2 >= 2"
     --build-dir build --floor ci/test-floor.asan.txt) >"$out" 2>&1
 expect "13 --floor picks the file, and a lost test is red" 1 "$?" "floor 3 -- 1 lost"
 
-# warning-gate: the warning leg picks the section
+# warning-gate: judged by the compiler's section
 d=$(fixture w1)
 mkdir -p "$d/build/CMakeFiles/4.0.0"
 : > "$d/build/CMakeCache.txt"
 printf 'set(CMAKE_CXX_COMPILER_ID "GNU")\nset(CMAKE_CXX_COMPILER_VERSION "16.1.0")\n' \
     > "$d/build/CMakeFiles/4.0.0/CMakeCXXCompiler.cmake"
 printf '[1/2] Building CXX object a.o\n[2/2] Building CXX object b.o\n' > "$d/build.log"
-printf '{"GNU-16/both": {"min_compile_units": 2, "project": {}, "system": {}, "system_reasons": {}}}\n' \
+printf '{"GNU-16": {"min_compile_units": 2, "project": {}, "system": {}, "system_reasons": {}}}\n' \
     > "$d/ci/warning-baseline.json"
 commit "$d"
-expect "14 warning-gate is judged by the warning leg's section" 0 \
-    "$(rg "$d" --gates warning-gate --build-dir build --build-log build.log --warning-leg both)" \
-    "at or below the GNU-16/both baseline"
-expect "15 without the warning leg the compiler key has no section (--require-key)" 1 \
+expect "14 warning-gate is judged by the compiler's section" 0 \
+    "$(rg "$d" --gates warning-gate --build-dir build --build-log build.log)" \
+    "at or below the GNU-16 baseline"
+printf '{"GNU-13": {"min_compile_units": 2, "project": {}, "system": {}, "system_reasons": {}}}\n' \
+    > "$d/ci/warning-baseline.json"
+commit "$d"
+expect "15 a compiler with no section is red (--require-key)" 1 \
     "$(rg "$d" --gates warning-gate --build-dir build --build-log build.log)" \
     "GNU-16 is not in the baseline"
 

@@ -40,25 +40,10 @@ inputs:
     description: Repository name the packages are built for (default the repository part of github.repository).
     required: false
     default: ''
-  refs:
-    description: >
-      upstream=source only: space-separated NAME=REF overrides of deps.lock
-      (e.g. "LibreMiddleware=main" for a manual build against upstream main).
-    required: false
-    default: ''
   art:
     description: Artefact root shared by consecutive builds in one job (upstream packages are reused from it).
     required: false
     default: ''
-  dist:
-    description: Directory that receives this repository's packages as release assets.
-    required: false
-    default: ''
-  jobs:
-    description: Build parallelism inside the container.
-    required: false
-    default: '4'
-
 outputs:
   dist:
     description: Directory holding <package>.<slug>.<deb|rpm> for this repository.
@@ -86,21 +71,18 @@ runs:
         IN_VERSION: ${{ inputs.version }}
         IN_REPO: ${{ inputs.repo }}
         IN_NAME: ${{ inputs.name }}
-        IN_REFS: ${{ inputs.refs }}
         IN_ART: ${{ inputs.art }}
-        IN_DIST: ${{ inputs.dist }}
-        PKG_JOBS: ${{ inputs.jobs }}
+        PKG_JOBS: '4'
         GH_REPOSITORY: ${{ github.repository }}
       run: |
         set -uo pipefail
         name="${IN_NAME:-${GH_REPOSITORY#*/}}"
         art="${IN_ART:-$RUNNER_TEMP/librescrs-packages}"
-        dist="${IN_DIST:-$RUNNER_TEMP/librescrs-dist/$IN_SLUG}"
+        dist="$RUNNER_TEMP/librescrs-dist/$IN_SLUG"
         git config --global --add safe.directory "$IN_REPO"
         args=(build --slug "$IN_SLUG" --art "$art" --upstream "$IN_UPSTREAM" \
               --root "$IN_REPO" --name "$name" --dist "$dist")
         [ -z "$IN_VERSION" ] || args+=(--version "$IN_VERSION")
-        for r in $IN_REFS; do args+=(--ref "$r"); done
         echo "art=$art" >>"$GITHUB_OUTPUT"
         echo "dist=$dist" >>"$GITHUB_OUTPUT"
         family="$("$GITHUB_ACTION_PATH/../../scripts/pkg-images" family "$IN_SLUG")" || exit 2

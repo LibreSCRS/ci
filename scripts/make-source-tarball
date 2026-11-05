@@ -6,25 +6,21 @@
 # the same gzip.
 #
 # Usage: make-source-tarball --name SOURCE [--root DIR] [--repo NAME]
-#                            [--version V] [--submodules yes|no]
-#                            [--exclude PATH]... [--vendor DEST=GITURL@PINFILE]...
-#                            [--out DIR]
+#                            [--vendor DEST=GITURL@PINFILE]... [--out DIR]
 #
 #   --name        Debian source name (librescrs-middleware, libreagent, ...)
-#   --version     default: the first line of <root>/VERSION
-#   --submodules  yes (default): the tree comes from a clone with
-#                 --recurse-submodules -- `git archive` does not descend into
-#                 submodules, and a tree without thirdparty/curl-source once
-#                 failed configuration ("No download info given for
-#                 'curl_external'"). no: the committed tree alone.
-#   --exclude     a path under the top directory left out; .github, build and
-#                 debian always are. Excludes are ANCHORED to the top directory:
-#                 an unanchored './.github' matched no member tar ever writes,
-#                 and the release tarball shipped .github/ for as long as that
-#                 exclude existed. There is deliberately no
-#                 --exclude-vcs-ignores: the vendored OpenSC ignores *.[0-9]
-#                 while tracking a man page that matches it, and dropping it
-#                 broke its autotools build.
+#   The tree comes from a clone with --recurse-submodules -- `git archive` does
+#   not descend into submodules, and a tree without thirdparty/curl-source once
+#   failed configuration ("No download info given for 'curl_external'"). The
+#   version is the first line of <root>/VERSION.
+#
+#   .github, build and debian are left out. The excludes are ANCHORED to the top
+#   directory: an unanchored './.github' matched no member tar ever writes, and
+#   the release tarball shipped .github/ for as long as that exclude existed.
+#   There is deliberately no --exclude-vcs-ignores: the vendored OpenSC ignores
+#   *.[0-9] while tracking a man page that matches it, and dropping it broke its
+#   autotools build.
+#
 #   --vendor      a dependency fetched at configure time rather than carried as
 #                 a submodule, placed at DEST at the commit of the one
 #                 `GIT_TAG <40-hex>` in PINFILE (the file the build would fetch
@@ -50,8 +46,8 @@
 # what it must be; 2 usage, no root, no VERSION.
 set -euo pipefail
 
-usage() { echo "usage: make-source-tarball --name SOURCE [--root DIR] [--repo NAME] [--version V] [--submodules yes|no] [--exclude PATH]... [--vendor DEST=GITURL@PINFILE]... [--out DIR]" >&2; exit 2; }
-NAME="" ROOT="" REPO="" VERSION="" SUBS=yes OUT="$PWD"
+usage() { echo "usage: make-source-tarball --name SOURCE [--root DIR] [--repo NAME] [--vendor DEST=GITURL@PINFILE]... [--out DIR]" >&2; exit 2; }
+NAME="" ROOT="" REPO="" OUT="$PWD"
 EXCLUDES=(.github build debian) VENDORS=()
 while [ "$#" -gt 0 ]; do
   [ "$#" -ge 2 ] || usage
@@ -59,9 +55,6 @@ while [ "$#" -gt 0 ]; do
     --name) NAME="$2" ;;
     --root) ROOT="$2" ;;
     --repo) REPO="$2" ;;
-    --version) VERSION="$2" ;;
-    --submodules) case "$2" in yes|no) SUBS="$2" ;; *) usage ;; esac ;;
-    --exclude) EXCLUDES+=("${2#./}") ;;
     --vendor) case "$2" in ?*=?*@?*) VENDORS+=("$2") ;; *) usage ;; esac ;;
     --out) OUT="$2" ;;
     *) usage ;;
@@ -75,10 +68,8 @@ done
 ROOT="$(cd "$ROOT" && pwd)"
 if [ -z "$REPO" ]; then REPO="${GITHUB_REPOSITORY:-}"; REPO="${REPO##*/}"; fi
 [ -n "$REPO" ] || REPO="$(basename "$ROOT")"
-if [ -z "$VERSION" ]; then
-  [ -f "$ROOT/VERSION" ] || { echo "make-source-tarball: no VERSION in $ROOT and no --version" >&2; exit 2; }
-  VERSION="$(sed -n 1p "$ROOT/VERSION" | tr -d '[:space:]')"
-fi
+[ -f "$ROOT/VERSION" ] || { echo "make-source-tarball: no VERSION in $ROOT" >&2; exit 2; }
+VERSION="$(sed -n 1p "$ROOT/VERSION" | tr -d '[:space:]')"
 [ -n "$VERSION" ] || { echo "make-source-tarball: empty version" >&2; exit 2; }
 
 work="$(mktemp -d "${TMPDIR:-/var/tmp}/make-source-tarball.XXXXXX")"
@@ -86,11 +77,7 @@ trap 'rm -rf "$work"' EXIT
 top="$REPO-$VERSION"
 tree="$work/$top"
 
-if [ "$SUBS" = yes ]; then
-  git clone --quiet --recurse-submodules "$ROOT" "$tree"
-else
-  git clone --quiet "$ROOT" "$tree"
-fi
+git clone --quiet --recurse-submodules "$ROOT" "$tree"
 find "$tree" -name .git -prune -exec rm -rf {} +
 
 for v in "${VENDORS[@]}"; do

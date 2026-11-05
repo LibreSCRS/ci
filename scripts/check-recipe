@@ -3,9 +3,8 @@
 # check-recipe -- the Arch recipe (PKGBUILD) of a consuming repository builds
 # THAT repository's signed release tag and says true things about it.
 #
-# Usage: check-recipe [--root DIR] [--repo NAME] [--recipe PATH] [--keys PATH]
+# Usage: check-recipe [--root DIR] [--repo NAME] [--recipe PATH]
 #                     [--srcname NAME] [--pin VAR=CMAKEFILE]...
-#                     [--p11kit-option CMAKE_OPTION]
 #
 #   own     exactly one source is this repository's own, spelled
 #           [<local>::]git+https://github.com/LibreSCRS/<repo>.git#tag=$pkgver?signed
@@ -24,10 +23,6 @@
 #           the check); every other source, an upstream archive at a fixed
 #           commit, carries a real 64-hex sha256. Same answer before and after
 #           the tag.
-#   p11kit  with --p11kit-option OPT: unless build() passes -DOPT=ON, neither
-#           the recipe nor the README beside it names share/p11-kit/modules and
-#           optdepends does not offer p11-kit (a package once described a
-#           registration it did not install).
 #
 # The recipe is read as TEXT, never sourced: it guards the honest edit of
 # source=, pkgver or a pin, not a recipe written to mislead (a URL assembled
@@ -45,8 +40,8 @@
 # KEYS, no gpg, no primary key in KEYS, bad usage).
 set -u
 
-usage() { echo "usage: check-recipe [--root DIR] [--repo NAME] [--recipe PATH] [--keys PATH] [--srcname NAME] [--pin VAR=FILE]... [--p11kit-option OPT]" >&2; exit 2; }
-ROOT="" REPO="" RECIPE="" KEYS="" SRCNAME="" P11OPT=""
+usage() { echo "usage: check-recipe [--root DIR] [--repo NAME] [--recipe PATH] [--srcname NAME] [--pin VAR=FILE]..." >&2; exit 2; }
+ROOT="" REPO="" RECIPE="" SRCNAME=""
 PINS=()
 while [ "$#" -gt 0 ]; do
   [ "$#" -ge 2 ] || usage
@@ -54,10 +49,8 @@ while [ "$#" -gt 0 ]; do
     --root) ROOT="$2" ;;
     --repo) REPO="$2" ;;
     --recipe) RECIPE="$2" ;;
-    --keys) KEYS="$2" ;;
     --srcname) SRCNAME="$2" ;;
     --pin) case "$2" in *=?*) PINS+=("$2") ;; *) usage ;; esac ;;
-    --p11kit-option) P11OPT="$2" ;;
     *) usage ;;
   esac
   shift 2
@@ -70,7 +63,7 @@ ROOT="$(cd "$ROOT" && pwd)"
 if [ -z "$REPO" ]; then REPO="${GITHUB_REPOSITORY:-}"; REPO="${REPO##*/}"; fi
 [ -n "$REPO" ] || REPO="$(basename "$ROOT")"
 case "$RECIPE" in '') RECIPE="$ROOT/packaging/arch/PKGBUILD" ;; /*) ;; *) RECIPE="$ROOT/$RECIPE" ;; esac
-case "$KEYS" in '') KEYS="$ROOT/KEYS" ;; /*) ;; *) KEYS="$ROOT/$KEYS" ;; esac
+KEYS="$ROOT/KEYS"
 
 rc=0
 bad() { printf 'FAIL   %s\n' "$1"; rc=1; }
@@ -216,27 +209,6 @@ else
     esac
   done
   printf 'trust: %d VCS source(s) at SKIP, %d download(s) with a real sha256\n' "$nvcs" "$nreal"
-fi
-
-# --- p11kit ----------------------------------------------------------------
-if [ -n "$P11OPT" ]; then
-  if sed -n '/^build()/,/^}/p' "$RECIPE" | grep -q -- "-D${P11OPT}=ON"; then
-    printf 'p11kit: build() installs the p11-kit registration; describing it is true\n'
-  else
-    claims=0
-    for f in "$RECIPE" "$(dirname "$RECIPE")/README.md"; do
-      [ -f "$f" ] || continue
-      while IFS= read -r hit; do
-        bad "p11kit: $(basename "$f"):${hit%%:*} names share/p11-kit/modules, which the package does not install (build() leaves $P11OPT off)"
-        claims=$((claims + 1))
-      done < <(grep -n 'share/p11-kit/modules' "$f")
-    done
-    if array optdepends | grep -q 'p11-kit'; then
-      bad "p11kit: optdepends offers p11-kit, and the package installs no p11-kit registration"
-      claims=$((claims + 1))
-    fi
-    [ "$claims" -ne 0 ] || printf 'p11kit: no registration installed, and none described\n'
-  fi
 fi
 
 echo "check-recipe: $REPO $([ "$rc" -eq 0 ] && echo GREEN || echo RED)"

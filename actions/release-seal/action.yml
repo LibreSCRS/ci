@@ -22,10 +22,6 @@ inputs:
   version:
     description: The preflight job's `version` output.
     required: true
-  artifacts:
-    description: The directory holding exactly the files to be released.
-    required: false
-    default: artifacts
 
 runs:
   using: composite
@@ -61,19 +57,19 @@ runs:
       shell: bash
       env:
         MODE: ${{ inputs.mode }}
-        ARTIFACTS: ${{ inputs.artifacts }}
+        ARTIFACTS: artifacts
       run: '"$GITHUB_ACTION_PATH/../../scripts/release-seal.sh" seal "$MODE" "$ARTIFACTS"'
 
     - name: Build provenance for every asset in SHA256SUMS
       if: inputs.mode == 'publish'
       uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
       with:
-        subject-checksums: ${{ inputs.artifacts }}/SHA256SUMS
+        subject-checksums: artifacts/SHA256SUMS
 
     - name: The provenance verifies for this repository, workflow and tag
       if: inputs.mode == 'publish'
       shell: bash
       env:
-        ARTIFACTS: ${{ inputs.artifacts }}
+        ARTIFACTS: artifacts
         GH_TOKEN: ${{ github.token }}
       run: '"$GITHUB_ACTION_PATH/../../scripts/release-seal.sh" attest-verify "$ARTIFACTS"'
