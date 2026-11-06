@@ -18,7 +18,7 @@
 #       code packages at VERSION, the keyring packages at KVERSION. FX/cert.asc
 #       is the certificate the keyring packages carry. Variants, each in a
 #       directory of its own:
-#         norec       a librecelik without Recommends (deb and rpm)
+#         norec       a librecelik without the agent dependency (deb and rpm)
 #         nopkgcheck  the opensusetw release package without pkg_gpgcheck=1
 #         noskip      the Fedora release packages without skip_if_unavailable
 #         unreach     a librecelik that depends on a package nothing provides
@@ -78,16 +78,14 @@ for slug in debian13 ubuntu2604; do
     mk LibreLinux $slug librescrs-agent amd64 "$v" \
         "Depends: liblibrescrs5 (>= 5.0), librescrs-card-plugins (>= 5.0), librescrs-pinentry-kde (= $v)"
     mk LibreLinux $slug librescrs-pinentry-kde amd64 "$v"
-    mk LibreCelik $slug librecelik amd64 "$v" "Depends: liblibrescrs-agentclient-qt5 (>= 5.0)" \
-        "Recommends: librescrs-agent (>= 5.0)"
+    mk LibreCelik $slug librecelik amd64 "$v" "Depends: liblibrescrs-agentclient-qt5 (>= 5.0), librescrs-agent (>= 5.0)"
     case " $VARIANTS " in *" norec "*) mk norec $slug librecelik amd64 "$v" "Depends: liblibrescrs-agentclient-qt5 (>= 5.0)" ;; esac
     case " $VARIANTS " in *" unreach "*) mk unreach $slug librecelik amd64 "$v" \
-        "Depends: liblibrescrs-agentclient-qt5 (>= 5.0), librescrs-nothing-provides (>= 5.0)" \
-        "Recommends: librescrs-agent (>= 5.0)" ;; esac
+        "Depends: liblibrescrs-agentclient-qt5 (>= 5.0), librescrs-nothing-provides (>= 5.0), librescrs-agent (>= 5.0)" ;; esac
     mk LibreKDE $slug librekde all "$v" \
         "Depends: librekde-common (= $v), librekde-plasmoid (= $v), librekde-kio (= $v), librekde-purpose (= $v), librekde-credentials (= $v)"
     mk LibreKDE $slug librekde-common all "$v"
-    mk LibreKDE $slug librekde-plasmoid amd64 "$v" "Depends: librekde-common (= $v)" "Recommends: librescrs-agent (>= 5.0)"
+    mk LibreKDE $slug librekde-plasmoid amd64 "$v" "Depends: librekde-common (= $v), librescrs-agent (>= 5.0)"
     for p in kio purpose credentials; do mk LibreKDE $slug librekde-$p amd64 "$v" "Depends: librekde-common (= $v)"; done
     export CODENAME
     mk packages $slug librescrs-archive-keyring all "$K-1$s"
@@ -127,16 +125,16 @@ mk LibreAgent librescrs-agent-client-qt "$V"
 mk LibreLinux librescrs-agent "$V" "Requires: librescrs-middleware$I >= 5.0" "Requires: librescrs-card-plugins$I >= 5.0" \
     "Requires: librescrs-pinentry-kde$I = $V-1%{?dist}"
 mk LibreLinux librescrs-pinentry-kde "$V"
-mk LibreCelik librecelik "$V" "Requires: librescrs-agent-client-qt$I >= 5.0" "Recommends: librescrs-agent >= 5.0"
+mk LibreCelik librecelik "$V" "Requires: librescrs-agent-client-qt$I >= 5.0" "Requires: librescrs-agent >= 5.0"
 ! variant norec || mk norec librecelik "$V" "Requires: librescrs-agent-client-qt$I >= 5.0"
 ! variant unreach || mk unreach librecelik "$V" "Requires: librescrs-agent-client-qt$I >= 5.0" \
-    "Requires: librescrs-nothing-provides >= 5.0" "Recommends: librescrs-agent >= 5.0"
+    "Requires: librescrs-nothing-provides >= 5.0" "Requires: librescrs-agent >= 5.0"
 if [ "$SLUG" != opensusetw ]; then   # LibreKDE is not built for Tumbleweed
     mk LibreKDE librekde "$V" "Requires: librekde-common = $V-1%{?dist}" "Requires: librekde-plasmoid$I = $V-1%{?dist}" \
         "Requires: librekde-kio$I = $V-1%{?dist}" "Requires: librekde-purpose$I = $V-1%{?dist}" \
         "Requires: librekde-credentials$I = $V-1%{?dist}"
     mk LibreKDE librekde-common "$V" "BuildArch: noarch"
-    mk LibreKDE librekde-plasmoid "$V" "Requires: librekde-common = $V-1%{?dist}" "Recommends: librescrs-agent >= 5.0"
+    mk LibreKDE librekde-plasmoid "$V" "Requires: librekde-common = $V-1%{?dist}" "Requires: librescrs-agent >= 5.0"
     for p in kio purpose credentials; do mk LibreKDE librekde-$p "$V" "Requires: librekde-common = $V-1%{?dist}"; done
 fi
 if [ "$PKG_MANAGER" = zypper ]; then

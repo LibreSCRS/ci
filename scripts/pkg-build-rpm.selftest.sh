@@ -30,7 +30,7 @@ BuildRequires:  gtest-devel, dbus-daemon
 BuildRequires:  librescrs-middleware-devel >= 5.0
 Requires:       qt6-qtbase-devel%{?_isa}
 Requires:       %{name}%{?_isa} = %{version}-%{release}
-Recommends:     librescrs-agent >= 5.0
+Requires:       librescrs-agent >= 5.0
 Summary:        ninja-build is only a word here'
 
 # ── the name map, on its own ──────────────────────────────────────────────

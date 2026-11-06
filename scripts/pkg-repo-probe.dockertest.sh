@@ -10,8 +10,9 @@
 #
 # Cases: the first-contact commands and the installation on every slug, Ubuntu
 # also under the Sequoia verifier (gpgv-sq, as apt's own P1 output shows), are
-# green; red: a librecelik without its Recommends, the Tumbleweed image's
-# no-recommends default kept, a foreign URL in install/fedora.txt, a host or an
+# green, and so is the Tumbleweed image's no-recommends default kept (the agent
+# is a hard dependency, not a Recommends); red: a librecelik without the agent
+# dependency, a foreign URL in install/fedora.txt, a host or an
 # IP address without a scheme, zypper without the non-interactive wrapper
 # (failing on its prompt), a pass over its deadline (cannot judge), a tree
 # without librekde on fedora44 (but not on opensusetw, which has no LibreKDE);
@@ -77,7 +78,7 @@ else
     fx_packages "$fx" 5.0.0 1.0.0 norec nopkgcheck
     fx_sign "$ci" "$fx"
     # tree NAME -- the tree of variant NAME: good | norec (librecelik without
-    # Recommends) | nokde (no librekde metapackage) | nopkgcheck (the
+    # the agent dependency) | nokde (no librekde metapackage) | nopkgcheck (the
     # opensusetw release package without pkg_gpgcheck=1)
     tree() {
         fx_in "$work/in-$1" "$fx" 5.0.0 1.0.0 "$1"
@@ -129,17 +130,22 @@ else
     echo "FAIL P1 does not show the LibreSCRS InRelease verified by each verifier"; grep 'InRelease' "$log" | sed 's/^/  | /'; fail=1
 fi
 
-# --- 2. librecelik without Recommends -----------------------------------------
+# --- 2. librecelik without the agent dependency -----------------------------------------
 probe_run norec --slugs "debian13 fedora44"
-expect "RED librecelik without Recommends" 1 "$rc" "librescrs-agent not installed"
+expect "RED librecelik without the agent dependency" 1 "$rc" "librescrs-agent not installed"
 cases=$((cases + 1))
 if [ "$(grep -c '^pkg-repo-probe: \(debian13\|fedora44\): p1p2 red$' "$log")" = 2 ]; then
     echo "ok   ...on both slugs"
 else echo "FAIL not red on both slugs"; grep '^pkg-repo-probe:' "$log" | sed 's/^/  | /'; fail=1; fi
 
 # --- 3. the Tumbleweed image's no-recommends default kept ----------------------
+# The agent is a Depends, so skipping Recommends cannot drop it: green.
 PROBE_KEEP_IMAGE_DEFAULTS=1 probe_run good --slugs opensusetw
-expect "RED opensusetw with the image's no-recommends.conf kept" 1 "$rc" "librescrs-agent not installed"
+expect "opensusetw with the image's no-recommends.conf kept: the agent is still installed" 0 "$rc"
+cases=$((cases + 1))
+if grep -q '^pkg-repo-probe: opensusetw: p1p2 green$' "$log" && grep -q "the image's no-recommends.conf is kept" "$log"; then
+    echo "ok   ...with the image defaults really kept"
+else echo "FAIL the image defaults were not kept, or the pass is not green"; grep -E "^pkg-repo-probe:|no-recommends" "$log" | sed 's/^/  | /'; fail=1; fi
 
 # --- 4. a foreign URL in install/fedora.txt ------------------------------------
 bad="$work/install-badurl"; command cp -rf "$inst" "$bad"
