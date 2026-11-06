@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # stack-chain -- build the whole LibreSCRS package stack for every
 # distribution slug and install it in a clean container: the top repositories
-# (LibreLinux, LibreCelik, LibreKDE) at the given refs, everything below them
-# at the commits their deps.lock names. Green here is what a release will
+# (LibreCelik, LibreKDE) at the given refs, everything below them -- LibreLinux
+# included, whose agent their packages depend on -- at the commits their
+# deps.lock names. Green here is what a release will
 # build. (Upstream main moving ahead is seen when `bump-deps to-head` lands in
 # a consumer and its CI builds against it -- not by a second weekly stack.)
 #
@@ -32,9 +33,6 @@ on:
       - '.github/workflows/stack-chain.yml'
   workflow_dispatch:
     inputs:
-      linux-ref:
-        description: LibreLinux ref
-        default: main
       celik-ref:
         description: LibreCelik ref
         default: main
@@ -99,13 +97,6 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          repository: LibreSCRS/LibreLinux
-          ref: ${{ inputs.linux-ref || 'main' }}
-          path: src/LibreLinux
-          submodules: recursive
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
           repository: LibreSCRS/LibreCelik
           ref: ${{ inputs.celik-ref || 'main' }}
           path: src/LibreCelik
@@ -120,16 +111,11 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
-      - name: LibreMiddleware, LibreAgent and LibreLinux
-        id: ll
-        uses: ./actions/pkg-build
-        with:
-          slug: ${{ matrix.slug }}
-          upstream: source
-          repo: ${{ github.workspace }}/src/LibreLinux
-          name: LibreLinux
-          art: ${{ runner.temp }}/stack
-      - name: LibreCelik
+      # LibreLinux is built here, from the commit LibreCelik locks, together
+      # with LibreMiddleware and LibreAgent; LibreKDE locks the same one and
+      # reuses it. A separate build from a branch would be rebuilt over by the
+      # locked one.
+      - name: LibreCelik and everything below it
         uses: ./actions/pkg-build
         with:
           slug: ${{ matrix.slug }}
