@@ -217,10 +217,25 @@ expect 1 "stale lock seen through the workspace clone too" 'RED: LibreCelik: Lib
 restore LibreCelik
 
 # ---------------------------------------------------------------- diamond
+# An older LibreAgent is fine while the LibreLinux it is locked with builds that
+# same LibreAgent (LibreLinux's first lock commit does).
 setsha LibreKDE LibreAgent "$old_la"
+setsha LibreKDE LibreLinux "$(git -C "$WS/LibreLinux" rev-parse HEAD~1)"
 expect 0 "an older but reachable lock is fine on its own" -- "$BD" check --root "$WS/LibreKDE"
 expect 1 "diamond: LibreKDE and LibreCelik lock different LibreAgent" 'RED: diamond -- LibreAgent is locked at 2 revisions' -- "$BD" check --workspace "$WS"
 restore LibreKDE
+expect 0 "LibreCelik: green control for the LibreLinux rows" -- "$BD" check --root "$WS/LibreCelik"
+perturb LibreCelik '/^LibreLinux/d'
+expect 1 "LibreCelik without a LibreLinux row is refused" 'LibreCelik/deps.lock: no row for LibreLinux' -- "$BD" check --root "$WS/LibreCelik" --no-remote
+restore LibreCelik
+perturb LibreKDE '/^LibreLinux/d'
+expect 1 "LibreKDE without a LibreLinux row is refused" 'LibreKDE/deps.lock: no row for LibreLinux' -- "$BD" check --root "$WS/LibreKDE" --no-remote
+restore LibreKDE
+setsha LibreCelik LibreAgent "$old_la"
+expect 1 "diamond: LibreCelik's LibreAgent is not the one its LibreLinux builds" \
+    'RED: LibreCelik: diamond -- LibreCelik locks LibreAgent [0-9a-f]+ but its LibreLinux [0-9a-f]+ builds LibreAgent' -- \
+    "$BD" check --root "$WS/LibreCelik"
+restore LibreCelik
 old_lm="$(git -C "$T/seed/LibreMiddleware" rev-parse HEAD~1)"
 setsha LibreLinux LibreMiddleware "$old_lm"
 expect 1 "diamond: LibreLinux's LibreMiddleware is not the one its LibreAgent builds" 'RED: LibreLinux: diamond -- LibreLinux locks LibreMiddleware' -- \
@@ -229,8 +244,9 @@ restore LibreLinux
 
 la_root="$(git -C "$WS/LibreAgent" rev-list --max-parents=0 HEAD)"
 setsha LibreCelik LibreAgent "$la_root"
-expect 0 "a LibreAgent without deps.lock is nothing to LibreCelik, which locks no LibreMiddleware" -- \
-    "$BD" check --root "$WS/LibreCelik"
+expect 1 "a LibreAgent without deps.lock is not read for LibreCelik (no LibreMiddleware row): only the LibreLinux diamond is red" \
+    'RED: LibreCelik: diamond -- LibreCelik locks LibreAgent .* but its LibreLinux' -- "$BD" check --root "$WS/LibreCelik"
+assert "and the LibreAgent without deps.lock was never complained about" -- bash -c "! grep -q 'has no deps.lock' '$T/out'"
 restore LibreCelik
 setsha LibreLinux LibreAgent "$la_root"
 expect 2 "LibreLinux on a LibreAgent without deps.lock: the diamond cannot be judged" \
@@ -283,7 +299,7 @@ expect 2 "build dir that built nothing from source cannot be judged" 'none was f
 assert "the lock written by to-head carries three columns" -- \
     bash -c "! grep -Ev '^[[:space:]]*(#|$)' '$WS/LibreCelik/deps.lock' | awk 'NF != 3 { bad = 1 } END { exit !bad }'"
 expect 1 "--tag before upstream tagged" 'has no tag 5.0.0 upstream' -- "$BD" check --root "$WS/LibreCelik" --tag 5.0.0
-for R in LibreMiddleware LibreAgent; do
+for R in LibreMiddleware LibreAgent LibreLinux; do
     git -C "$WS/$R" pull -q --ff-only origin main
     git -C "$WS/$R" tag -a 5.0.0 -m "$R 5.0.0" && git -C "$WS/$R" push -q origin 5.0.0
 done
