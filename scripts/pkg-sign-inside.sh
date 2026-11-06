@@ -15,9 +15,25 @@ case "$PKG_MANAGER" in
     *) echo "pkg-sign: manager '$PKG_MANAGER'" >&2; exit 2 ;;
 esac
 [ "$MODE" = sign ] || pk=()
+# A mirror caught mid-sync serves a repomd that names a file it does not have
+# yet; the next refresh sees the finished sync, so install is retried after one.
+pm_install() {
+    if [ "$PKG_MANAGER" = dnf ]; then dnf -y -q install "$@" >/dev/null
+    else zypper -n -q install "$@" >/dev/null; fi
+}
+pm_refresh() {
+    if [ "$PKG_MANAGER" = dnf ]; then dnf -y -q makecache --refresh >/dev/null 2>&1
+    else zypper -n -q refresh --force >/dev/null 2>&1; fi
+}
 if [ "${#pk[@]}" -gt 0 ]; then
-    if [ "$PKG_MANAGER" = dnf ]; then dnf -y -q install "${pk[@]}" >/dev/null
-    else zypper -n -q install "${pk[@]}" >/dev/null; fi || exit 2
+    tries=0
+    until pm_install "${pk[@]}"; do
+        tries=$((tries + 1))
+        [ "$tries" -lt 3 ] || { echo "pkg-sign: ${pk[*]} did not install in $tries attempts" >&2; exit 2; }
+        echo "pkg-sign: install failed (attempt $tries of 3), refreshing the repositories" >&2
+        sleep "${PKG_SIGN_RETRY_SLEEP:-10}"
+        pm_refresh || true
+    done
 fi
 GNUPGHOME="$(mktemp -d /var/tmp/lg.XXXXXX)"; export GNUPGHOME; chmod 700 "$GNUPGHOME"
 db="$(mktemp -d /var/tmp/kdb.XXXXXX)"; trap 'rm -rf "$GNUPGHOME" "$db"' EXIT
